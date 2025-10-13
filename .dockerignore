@@ -1,0 +1,6 @@
+realtimeavtervenv/
+__pycache__/
+*.pyc
+.git
+.gitignore
+.DS_Store
