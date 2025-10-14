@@ -15,5 +15,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Expose port for health checks (optional)
+EXPOSE 8080
+
 # Background worker entrypoint (no HTTP)
-CMD ["python", "main.py"]
+# Use 'start' for production, 'dev' for local development
+CMD ["python", "main.py", "start"]

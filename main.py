@@ -1,12 +1,24 @@
 import logging
+import os
 from livekit.agents import JobContext, WorkerOptions, cli, Agent, AgentSession
 from livekit.plugins import deepgram, silero, tavus, groq
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("avatar")
 logger.setLevel(logging.INFO)
+
+# Log environment variables (without exposing secrets)
+logger.info("Environment check:")
+logger.info(f"LIVEKIT_URL: {'Set' if os.getenv('LIVEKIT_URL') else 'Missing'}")
+logger.info(
+    f"DEEPGRAM_API_KEY: {'Set' if os.getenv('DEEPGRAM_API_KEY') else 'Missing'}"
+)
+logger.info(f"GROQ_API_KEY: {'Set' if os.getenv('GROQ_API_KEY') else 'Missing'}")
+logger.info(f"TAVUS_API_KEY: {'Set' if os.getenv('TAVUS_API_KEY') else 'Missing'}")
 
 
 class AvatarAgent(Agent):
@@ -24,36 +36,44 @@ The highly talented team at Aafaq led by its visionary leadership diligently str
 
 async def entrypoint(ctx: JobContext):
     logger.info("Starting agent and avatar session")
-    agent = AvatarAgent()
 
-    # Initialize AgentSession with required components
-    session = AgentSession(
-        stt=deepgram.STT(model="nova-3", language="multi"),
-        llm=groq.LLM(model="llama-3.3-70b-versatile"),
-        tts=deepgram.TTS(),
-        vad=silero.VAD.load(),
-        # Uncomment and configure if turn_detection is needed
-        # turn_detection=MultilingualModel(),
-    )
+    try:
+        # Connect to the context first
+        await ctx.connect()
+        logger.info("Connected to LiveKit room")
 
-    # Connect to the context
-    await ctx.connect()
+        # Initialize the agent
+        agent = AvatarAgent()
+        logger.info("Agent initialized")
 
-    # Initialize avatar session
-    avatar = tavus.AvatarSession(replica_id="r6ca16dbe104", persona_id="p7fb0be3")
+        # Initialize AgentSession with required components
+        session = AgentSession(
+            stt=deepgram.STT(model="nova-3", language="multi"),
+            llm=groq.LLM(model="llama-3.3-70b-versatile"),
+            tts=deepgram.TTS(),
+            vad=silero.VAD.load(),
+            # Uncomment and configure if turn_detection is needed
+            # turn_detection=MultilingualModel(),
+        )
+        logger.info("AgentSession initialized")
 
-    logger.info("Starting agent session")
-    await session.start(room=ctx.room, agent=agent)
+        # Initialize avatar session
+        avatar = tavus.AvatarSession(replica_id="r6ca16dbe104", persona_id="p7fb0be3")
+        logger.info("Avatar session initialized")
 
-    logger.info("Starting avatar session")
-    await avatar.start(session, room=ctx.room)  # Pass session as positional argument
+        # Start avatar session first
+        logger.info("Starting avatar session")
+        await avatar.start(session, room=ctx.room)
 
-    logger.info("Sessions started successfully")
+        # Start agent session
+        logger.info("Starting agent session")
+        await session.start(room=ctx.room, agent=agent)
 
-    # Generate initial reply
-    await session.generate_reply(
-        instructions="Greet the user and offer your assistance."
-    )
+        logger.info("All sessions started successfully")
+
+    except Exception as e:
+        logger.error(f"Error starting sessions: {e}")
+        raise
 
 
 if __name__ == "__main__":
