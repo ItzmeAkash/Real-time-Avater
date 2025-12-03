@@ -1,47 +1,7 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environments
+.env
 realtimeavtervenv/
-venv/
-ENV/
-env/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Git
-.git/
+__pycache__/
+*.pyc
+.git
 .gitignore
-
-# Environment files (will be passed via env_file or environment)
-.env.local
-.env.*.local
-
-# Logs
-*.log
-
-# OS
 .DS_Store
-Thumbs.db
-
-# Docker
-docker-compose*.yml
-Dockerfile*
-.dockerignore
-
-# Documentation
-README.md
-*.md
