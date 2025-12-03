@@ -1,7 +1,47 @@
-.env
-realtimeavtervenv/
+# Python
 __pycache__/
-*.pyc
-.git
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+realtimeavtervenv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
 .gitignore
+
+# Environment files (will be passed via env_file or environment)
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Documentation
+README.md
+*.md

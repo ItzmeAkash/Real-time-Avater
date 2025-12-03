@@ -20,4 +20,4 @@ EXPOSE 8080
 
 # Background worker entrypoint (no HTTP)
 # Use 'start' for production, 'dev' for local development
-CMD ["python", "main.py", "start"]
+CMD ["python", "main.py", "dev"]
