@@ -11,7 +11,6 @@ from livekit.agents import (
     cli,
     Agent,
     AgentSession,
-    ConversationItemAddedEvent,
 )
 from livekit.plugins import deepgram, silero, tavus, groq, sarvam
 from dotenv import load_dotenv
@@ -44,7 +43,7 @@ disconnect_detected: bool = False  # Flag to track if user disconnected
 class CustomerRolePlayAgent(Agent):
     def __init__(self) -> None:
         super().__init__(
-           instructions="""आप एक वास्तविक भारतीय बैंक ग्राहक की भूमिका निभा रहे हैं, जो एक फ्रंटलाइन बैंक सेल्स ऑफिसर के साथ सिम्युलेटेड वॉइस बातचीत कर रहा है।
+            instructions="""आप एक वास्तविक भारतीय बैंक ग्राहक की भूमिका निभा रहे हैं, जो एक फ्रंटलाइन बैंक सेल्स ऑफिसर के साथ सिम्युलेटेड वॉइस बातचीत कर रहा है।
 आपकी एकमात्र जिम्मेदारी इस ग्राहक की तरह स्वाभाविक, भावनात्मक और लगातार बातचीत करना है।
 कभी भी यह न बताएं कि आप AI हैं या यह कोई सिमुलेशन है। हर समय पूरी तरह अपने किरदार में रहें।
 आप पूरी बातचीत केवल हिंदी में करेंगे।
@@ -366,135 +365,79 @@ async def finalize_conversation_and_evaluate(
     global conversation_transcript
 
     logger.info(f"{reason}. Finalizing conversation and generating evaluation...")
-    logger.info(f"Current transcript entries: {len(conversation_transcript)}")
 
-    # Final extraction of transcript from session.history (LiveKit's proper API)
+    # Final extraction of transcript from session
     try:
-        if session and hasattr(session, "history"):
-            history = session.history
-            logger.info(f"Extracting messages from session.history")
-
-            # Get all messages from history
-            try:
-                # Try to get history as a list or iterable
-                if hasattr(history, "messages"):
-                    messages = history.messages
-                elif hasattr(history, "__iter__"):
-                    messages = list(history)
-                else:
-                    # Try to_dict() method if available
-                    history_dict = (
-                        history.to_dict() if hasattr(history, "to_dict") else {}
+        if hasattr(session, "chat_ctx") and session.chat_ctx:
+            messages = session.chat_ctx.messages
+            for msg in messages:
+                role = "Salesperson" if msg.role == "user" else "Customer"
+                content = msg.content if hasattr(msg, "content") else str(msg)
+                # Only add if not already tracked
+                if not any(
+                    t["message"] == content and t["role"] == role
+                    for t in conversation_transcript
+                ):
+                    track_message(
+                        role, content, room=ctx.room if hasattr(ctx, "room") else None
                     )
-                    messages = history_dict.get("messages", [])
-
-                logger.info(f"Found {len(messages)} messages in session.history")
-
-                for msg in messages:
-                    # Handle different message formats
-                    if isinstance(msg, dict):
-                        role = msg.get("role", "unknown")
-                        content = msg.get("content", "") or msg.get("text_content", "")
-                    else:
-                        # Handle message objects
-                        role = getattr(msg, "role", "unknown")
-                        content = getattr(msg, "text_content", "") or getattr(
-                            msg, "content", ""
-                        )
-                        if not content:
-                            # Try to get content from content attribute if it's a list
-                            if hasattr(msg, "content") and isinstance(
-                                msg.content, list
-                            ):
-                                content = " ".join([str(c) for c in msg.content if c])
-
-                    # Map roles: 'user' -> 'Salesperson', 'assistant' -> 'Customer'
-                    role_mapped = "Salesperson" if role == "user" else "Customer"
-
-                    # Skip empty messages
-                    if not content or not str(content).strip():
-                        continue
-
-                    content_str = str(content).strip()
-
-                    # Only add if not already tracked
-                    if not any(
-                        t["message"] == content_str and t["role"] == role_mapped
-                        for t in conversation_transcript
-                    ):
-                        track_message(
-                            role_mapped,
-                            content_str,
-                            room=ctx.room if hasattr(ctx, "room") else None,
-                        )
-            except Exception as e:
-                logger.warning(f"Error processing session.history: {e}")
-                import traceback
-
-                logger.debug(traceback.format_exc())
-        else:
-            logger.warning("Session or history not available for final extraction")
     except Exception as e:
-        logger.warning(f"Could not extract final transcript from session.history: {e}")
-        import traceback
+        logger.warning(f"Could not extract final transcript: {e}")
 
-        logger.debug(traceback.format_exc())
-
-    # Always save transcript, even if empty (for debugging)
-    logger.info(f"Final transcript count before saving: {len(conversation_transcript)}")
-
-    # Get room name for file naming
-    room_name = "unknown"
-    if hasattr(ctx, "room") and ctx.room:
-        try:
-            room_name = ctx.room.name
-        except Exception:
-            # Room might be closed, use fallback
-            room_name = "unknown"
-
+    # Generate evaluation
     if conversation_transcript:
+        logger.info("Generating evaluation report...")
+        evaluation_report = await evaluate_conversation(conversation_transcript)
+
         # Save transcript and evaluation
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         transcript_file = f"conversation_transcript_{timestamp}.txt"
         evaluation_file = f"evaluation_report_{timestamp}.txt"
 
-        # Save transcript as text file (for human readability)
+        # Save transcript
         with open(transcript_file, "w", encoding="utf-8") as f:
             f.write("=== CONVERSATION TRANSCRIPT ===\n\n")
             for entry in conversation_transcript:
                 f.write(f"[{entry['timestamp']}] {entry['role']}: {entry['message']}\n")
 
-        logger.info(f"Transcript saved to: {transcript_file}")
+        # Save evaluation
+        with open(evaluation_file, "w", encoding="utf-8") as f:
+            f.write("=== EVALUATION REPORT ===\n\n")
+            f.write(evaluation_report)
 
-        # Save transcript as JSON file for API endpoint to read
+        logger.info(f"Transcript saved to: {transcript_file}")
+        logger.info(f"Evaluation saved to: {evaluation_file}")
+
+        # Save evaluation result in JSON format for API retrieval (keyed by room name)
         try:
-            transcript_data = {
+            room_name = "unknown"
+            if hasattr(ctx, "room") and ctx.room:
+                try:
+                    room_name = ctx.room.name
+                except Exception:
+                    # Room might be closed, use fallback
+                    room_name = "unknown"
+            evaluation_data = {
                 "room": room_name,
                 "timestamp": timestamp,
+                "evaluation": evaluation_report,
                 "transcript": conversation_transcript,
             }
-            transcript_json_file = f"transcript_{room_name}_{timestamp}.json"
-            with open(transcript_json_file, "w", encoding="utf-8") as f:
-                json.dump(transcript_data, f, indent=2, ensure_ascii=False)
-            logger.info(f"Transcript JSON saved to: {transcript_json_file}")
+            evaluation_json_file = f"evaluation_{room_name}_{timestamp}.json"
+            with open(evaluation_json_file, "w", encoding="utf-8") as f:
+                json.dump(evaluation_data, f, indent=2, ensure_ascii=False)
+            logger.info(f"Evaluation JSON saved to: {evaluation_json_file}")
         except Exception as e:
-            logger.warning(f"Could not save transcript JSON: {e}")
+            logger.warning(f"Could not save evaluation JSON: {e}")
 
-        # Note: Evaluation will be generated by the API endpoint when called
-        # We don't generate it here anymore to save time
-        logger.info(
-            "Transcript saved. Evaluation will be generated when API endpoint is called."
-        )
+        # Also log the evaluation
+        logger.info("\n" + "=" * 80)
+        logger.info("EVALUATION REPORT")
+        logger.info("=" * 80)
+        logger.info(evaluation_report)
+        logger.info("=" * 80)
     else:
         logger.warning("No conversation transcript found. Skipping evaluation.")
-        # Still save an empty transcript file for debugging
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        transcript_file = f"conversation_transcript_{timestamp}_EMPTY.txt"
-        with open(transcript_file, "w", encoding="utf-8") as f:
-            f.write("=== CONVERSATION TRANSCRIPT (EMPTY) ===\n\n")
-            f.write(f"Reason: {reason}\n")
-            f.write("No transcript entries were captured.\n")
-        logger.warning(f"Empty transcript file saved to: {transcript_file}")
 
 
 async def monitor_conversation_duration(ctx: JobContext, session: AgentSession):
@@ -602,36 +545,6 @@ async def entrypoint(ctx: JobContext):
             logger.warning("Room disconnected immediately after connect")
             return
 
-        # Set up room event listener for immediate disconnect detection
-        def on_participant_disconnected(participant):
-            """Handle participant disconnect event"""
-            global disconnect_detected
-            logger.info(
-                f"Participant {participant.identity if hasattr(participant, 'identity') else 'unknown'} disconnected. Triggering evaluation..."
-            )
-            disconnect_detected = True
-
-        # Register disconnect event handler (try different event registration methods)
-        try:
-            if hasattr(ctx.room, "on"):
-                ctx.room.on("participant_disconnected", on_participant_disconnected)
-                logger.info(
-                    "Registered participant disconnect event handler using .on()"
-                )
-            elif hasattr(ctx.room, "add_listener"):
-                ctx.room.add_listener(
-                    "participant_disconnected", on_participant_disconnected
-                )
-                logger.info(
-                    "Registered participant disconnect event handler using .add_listener()"
-                )
-            else:
-                logger.warning(
-                    "Could not register disconnect event handler - room object doesn't support event registration"
-                )
-        except Exception as e:
-            logger.warning(f"Could not register disconnect event handler: {e}")
-
         # Monitor for participant disconnections
         async def monitor_disconnections():
             """Monitor room for participant disconnections"""
@@ -680,6 +593,7 @@ async def entrypoint(ctx: JobContext):
             ),
             llm=groq.LLM(model="openai/gpt-oss-120b"),
             # tts=deepgram.TTS(
+        
             #     # Deepgram TTS will handle multiple languages
             #     # The LLM will generate responses in the detected language
             #     # Deepgram TTS should automatically handle the language based on text content
@@ -687,114 +601,88 @@ async def entrypoint(ctx: JobContext):
             #     # If specific language models are needed, they can be configured here
             # ),
             tts=sarvam.TTS(
-                target_language_code="hi-IN",
-                speaker="anushka",
-            ),
+      target_language_code="hi-IN",
+      speaker="anushka",
+   ),
             vad=silero.VAD.load(),
         )
         logger.info("AgentSession initialized with multi-language support")
 
-        # Set up event handler for conversation_item_added to track transcripts in real-time
-        def on_conversation_item_added(event: ConversationItemAddedEvent):
-            """Handle new conversation items as they're added (real-time transcript capture)"""
+        # Track messages and detect language from session's chat context
+        # We'll extract messages from the session after it's started
+        async def extract_transcript_periodically():
+            """Periodically extract transcript from session and detect language"""
             global detected_language
+            while True:
+                await asyncio.sleep(5)  # Check every 5 seconds
+                try:
+                    # Access session's chat context if available
+                    if hasattr(session, "chat_ctx") and session.chat_ctx:
+                        messages = session.chat_ctx.messages
+                        # Update transcript with new messages
+                        for msg in messages:
+                            role = "Salesperson" if msg.role == "user" else "Customer"
+                            content = (
+                                msg.content if hasattr(msg, "content") else str(msg)
+                            )
 
-            try:
-                item = event.item
+                            # Detect language from user messages (salesperson)
+                            if role == "Salesperson" and content:
+                                # Simple language detection based on script
+                                if any(
+                                    ord(char) >= 0x0900 and ord(char) <= 0x097F
+                                    for char in content
+                                ):
+                                    # Devanagari script (Hindi, Marathi, etc.)
+                                    detected_language = "hi"
+                                    logger.info("Detected language: Hindi")
+                                elif any(
+                                    ord(char) >= 0x0D00 and ord(char) <= 0x0D7F
+                                    for char in content
+                                ):
+                                    # Malayalam script
+                                    detected_language = "ml"
+                                    logger.info("Detected language: Malayalam")
+                                elif any(
+                                    ord(char) >= 0x0B80 and ord(char) <= 0x0BFF
+                                    for char in content
+                                ):
+                                    # Tamil script
+                                    detected_language = "ta"
+                                    logger.info("Detected language: Tamil")
+                                elif any(
+                                    ord(char) >= 0x0C00 and ord(char) <= 0x0C7F
+                                    for char in content
+                                ):
+                                    # Telugu script
+                                    detected_language = "te"
+                                    logger.info("Detected language: Telugu")
+                                elif any(
+                                    ord(char) >= 0x0C80 and ord(char) <= 0x0CFF
+                                    for char in content
+                                ):
+                                    # Kannada script
+                                    detected_language = "kn"
+                                    logger.info("Detected language: Kannada")
+                                else:
+                                    # Default to English
+                                    detected_language = "en"
 
-                # Get role and content from the conversation item
-                role = getattr(item, "role", "unknown")
-                # Map roles: 'user' -> 'Salesperson', 'assistant' -> 'Customer'
-                role_mapped = "Salesperson" if role == "user" else "Customer"
+                            # Only add if not already tracked
+                            if not any(
+                                t["message"] == content and t["role"] == role
+                                for t in conversation_transcript
+                            ):
+                                track_message(
+                                    role,
+                                    content,
+                                    room=ctx.room if hasattr(ctx, "room") else None,
+                                )
+                except Exception as e:
+                    logger.debug(f"Error extracting transcript: {e}")
 
-                # Get text content from the item
-                content = ""
-                if hasattr(item, "text_content"):
-                    content = item.text_content
-                elif hasattr(item, "content"):
-                    content_obj = item.content
-                    if isinstance(content_obj, str):
-                        content = content_obj
-                    elif isinstance(content_obj, list):
-                        # Extract text from content list
-                        content_parts = []
-                        for c in content_obj:
-                            if isinstance(c, str):
-                                content_parts.append(c)
-                            elif hasattr(c, "text"):
-                                content_parts.append(c.text)
-                            else:
-                                content_parts.append(str(c))
-                        content = " ".join(content_parts)
-                    else:
-                        content = str(content_obj)
-
-                # Skip empty messages
-                if not content or not content.strip():
-                    return
-
-                content_str = content.strip()
-
-                # Detect language from user messages (salesperson)
-                if role_mapped == "Salesperson" and content_str:
-                    # Simple language detection based on script
-                    if any(
-                        ord(char) >= 0x0900 and ord(char) <= 0x097F
-                        for char in content_str
-                    ):
-                        detected_language = "hi"
-                        logger.info("Detected language: Hindi")
-                    elif any(
-                        ord(char) >= 0x0D00 and ord(char) <= 0x0D7F
-                        for char in content_str
-                    ):
-                        detected_language = "ml"
-                        logger.info("Detected language: Malayalam")
-                    elif any(
-                        ord(char) >= 0x0B80 and ord(char) <= 0x0BFF
-                        for char in content_str
-                    ):
-                        detected_language = "ta"
-                        logger.info("Detected language: Tamil")
-                    elif any(
-                        ord(char) >= 0x0C00 and ord(char) <= 0x0C7F
-                        for char in content_str
-                    ):
-                        detected_language = "te"
-                        logger.info("Detected language: Telugu")
-                    elif any(
-                        ord(char) >= 0x0C80 and ord(char) <= 0x0CFF
-                        for char in content_str
-                    ):
-                        detected_language = "kn"
-                        logger.info("Detected language: Kannada")
-                    else:
-                        detected_language = "en"
-
-                # Add to transcript (check for duplicates)
-                if not any(
-                    t["message"] == content_str and t["role"] == role_mapped
-                    for t in conversation_transcript
-                ):
-                    track_message(
-                        role_mapped,
-                        content_str,
-                        room=ctx.room if hasattr(ctx, "room") else None,
-                    )
-                    logger.info(
-                        f"Captured transcript: {role_mapped} - {content_str[:100]}..."
-                    )
-            except Exception as e:
-                logger.warning(f"Error handling conversation_item_added event: {e}")
-                import traceback
-
-                logger.debug(traceback.format_exc())
-
-        # Register the event handler
-        session.on("conversation_item_added", on_conversation_item_added)
-        logger.info(
-            "Registered conversation_item_added event handler for real-time transcript capture"
-        )
+        # Start transcript extraction task
+        transcript_task = asyncio.create_task(extract_transcript_periodically())
 
         # Initialize avatar session
         avatar = tavus.AvatarSession(replica_id="r6ca16dbe104", persona_id="p7fb0be3")
@@ -810,51 +698,13 @@ async def entrypoint(ctx: JobContext):
             # Continue even if avatar fails - agent can still work without avatar
             avatar = None
 
-        # Start agent session with disconnect monitoring
-        session_closed_unexpectedly = False
+        # Start agent session
         try:
             logger.info("Starting agent session")
-
-            # Monitor session in background to catch unexpected closes
-            async def monitor_session_close():
-                """Monitor session for unexpected closure"""
-                global disconnect_detected, session_closed_unexpectedly
-                try:
-                    # Wait for session to start
-                    await asyncio.sleep(2)
-
-                    # Monitor session state
-                    while not disconnect_detected and not manual_end_requested:
-                        try:
-                            # Check if session is still active
-                            if hasattr(session, "closed") and session.closed:
-                                logger.warning(
-                                    "Session closed unexpectedly. Triggering evaluation..."
-                                )
-                                session_closed_unexpectedly = True
-                                disconnect_detected = True
-                                break
-                        except Exception:
-                            pass
-                        await asyncio.sleep(1)
-                except Exception as e:
-                    logger.debug(f"Session monitor error: {e}")
-
-            session_monitor_task = asyncio.create_task(monitor_session_close())
-
             await session.start(room=ctx.room, agent=agent)
             logger.info("Agent session started successfully")
         except Exception as e:
             logger.error(f"Error starting agent session: {e}")
-            # If session fails to start but we have transcript, save it
-            if conversation_transcript:
-                logger.info("Session failed but transcript exists. Saving...")
-                try:
-                    await finalize_conversation_and_evaluate(
-                        ctx, session, f"Session start error: {str(e)}"
-                    )
-                except Exception as save_error:
-                    logger.error(f"Failed to save transcript: {save_error}")
             raise
 
         # Start conversation duration monitor
@@ -864,61 +714,20 @@ async def entrypoint(ctx: JobContext):
             "All sessions started successfully. Conversation will run for 5 minutes."
         )
 
-        # Wait for monitor to complete (this will also cancel disconnect_monitor_task)
+        # Wait for monitor to complete (this will also cancel transcript_task and disconnect_monitor_task)
         try:
             await monitor_task
-        except Exception as monitor_error:
-            logger.error(f"Monitor task error: {monitor_error}")
-            # If monitor fails, still try to save transcript
-            if conversation_transcript:
-                logger.info(
-                    "Monitor failed but transcript exists. Attempting to save..."
-                )
-                try:
-                    await finalize_conversation_and_evaluate(
-                        ctx, session, f"Monitor error: {str(monitor_error)}"
-                    )
-                except Exception as save_error:
-                    logger.error(
-                        f"Failed to save transcript after monitor error: {save_error}"
-                    )
-        except asyncio.CancelledError:
-            logger.info("Monitor task was cancelled")
         finally:
-            # Cancel background tasks
+            transcript_task.cancel()
             disconnect_monitor_task.cancel()
-            if "session_monitor_task" in locals():
-                session_monitor_task.cancel()
-
+            try:
+                await transcript_task
+            except asyncio.CancelledError:
+                pass
             try:
                 await disconnect_monitor_task
-            except (asyncio.CancelledError, Exception) as e:
-                logger.debug(f"Disconnect monitor task cancelled/ended: {e}")
-
-            if "session_monitor_task" in locals():
-                try:
-                    await session_monitor_task
-                except (asyncio.CancelledError, Exception) as e:
-                    logger.debug(f"Session monitor task cancelled/ended: {e}")
-
-            # Final safety check: ALWAYS save transcript if we have any entries
-            if conversation_transcript:
-                logger.info(
-                    f"Final safety check: Saving transcript ({len(conversation_transcript)} entries) before exit..."
-                )
-                try:
-                    await finalize_conversation_and_evaluate(
-                        ctx, session, "Final safety save before exit"
-                    )
-                except Exception as final_error:
-                    logger.error(f"Final save attempt failed: {final_error}")
-                    import traceback
-
-                    logger.error(traceback.format_exc())
-            else:
-                logger.warning(
-                    "No transcript entries found at exit - this might indicate a problem with transcript tracking"
-                )
+            except asyncio.CancelledError:
+                pass
 
     except Exception as e:
         logger.error(f"Error starting sessions: {e}")
