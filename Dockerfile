@@ -27,4 +27,4 @@ RUN pip install -r requirements.txt
 
 
 # Start Gunicorn to serve the app
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
