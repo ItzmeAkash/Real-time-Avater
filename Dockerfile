@@ -20,4 +20,11 @@ EXPOSE 8080
 
 # Background worker entrypoint (no HTTP)
 # Use 'start' for production, 'dev' for local development
-CMD ["python", "main.py", "dev"]
+RUN pip install --upgrade pip
+
+# Copy and install Python dependencies
+RUN pip install -r requirements.txt
+
+
+# Start Gunicorn to serve the app
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
