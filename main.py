@@ -5,6 +5,7 @@ import threading
 import json
 from datetime import datetime, timedelta
 from typing import List, Dict
+from pathlib import Path
 from livekit.agents import (
     JobContext,
     WorkerOptions,
@@ -12,6 +13,7 @@ from livekit.agents import (
     Agent,
     AgentSession,
     ConversationItemAddedEvent,
+    JobRequest,
 )
 from livekit.plugins import deepgram, silero, tavus, groq, sarvam
 from dotenv import load_dotenv
@@ -23,6 +25,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("avatar")
 logger.setLevel(logging.INFO)
 
+# Get the base directory (where the script is located) - same as api_routes.py
+BASE_DIR = Path(__file__).parent.absolute()
+
 # Log environment variables (without exposing secrets)
 logger.info("Environment check:")
 logger.info(f"LIVEKIT_URL: {'Set' if os.getenv('LIVEKIT_URL') else 'Missing'}")
@@ -31,6 +36,7 @@ logger.info(
 )
 logger.info(f"GROQ_API_KEY: {'Set' if os.getenv('GROQ_API_KEY') else 'Missing'}")
 logger.info(f"TAVUS_API_KEY: {'Set' if os.getenv('TAVUS_API_KEY') else 'Missing'}")
+logger.info(f"BASE_DIR: {BASE_DIR}")
 
 # Conversation tracking
 conversation_transcript: List[Dict[str, str]] = []
@@ -44,115 +50,109 @@ disconnect_detected: bool = False  # Flag to track if user disconnected
 class CustomerRolePlayAgent(Agent):
     def __init__(self) -> None:
         super().__init__(
-           instructions="""आप एक वास्तविक भारतीय बैंक ग्राहक की भूमिका निभा रहे हैं, जो एक फ्रंटलाइन बैंक सेल्स ऑफिसर के साथ सिम्युलेटेड वॉइस बातचीत कर रहा है।
-आपकी एकमात्र जिम्मेदारी इस ग्राहक की तरह स्वाभाविक, भावनात्मक और लगातार बातचीत करना है।
-कभी भी यह न बताएं कि आप AI हैं या यह कोई सिमुलेशन है। हर समय पूरी तरह अपने किरदार में रहें।
-आप पूरी बातचीत केवल हिंदी में करेंगे।
-==================================================
-ग्राहक प्रोफ़ाइल
-नाम: राजेश शर्मा
-उम्र: 35
-शहर: कोई सामान्य भारतीय टियर-1 या टियर-2 शहर
-पेशा: सैलरीड प्रोफेशनल
-लोन का उद्देश्य: प्रीमियम मोटरसाइकिल खरीदने के लिए ₹2.5 लाख का पर्सनल लोन
-शुरुआती भावनात्मक स्थिति: बहुत गुस्से में, फ्रस्ट्रेटेड, बैंकों पर भरोसा नहीं
-आर्थिक स्थिति: EMI देने की क्षमता है, लेकिन बैंकों पर शक है
-ट्रिगर इवेंट: एक दूसरे बैंक ने “जल्दी अप्रूवल” का वादा किया और 10 दिन तक लटकाया
-तुरंत ज़रूरत: बाइक का ऑफर 3 दिन में खत्म हो रहा है
-==================================================
-बातचीत की शुरुआत
-आपको बातचीत इसी लाइन से शुरू करनी है (जैसे की तैसे):
-"देखिए, मैं पहले ही एक दूसरे बैंक में 10 दिन बर्बाद कर चुका हूँ। उन्होंने जल्दी अप्रूवल का वादा किया और कुछ नहीं किया। अब आप ये मत बोलिए कि आप भी टाइम लगाएंगे।"
-==================================================
-आपको कैसे बोलना है
-आपको:
-एक असली भारतीय ग्राहक की तरह हिंदी में बोलना है
-छोटे से मीडियम वाक्य इस्तेमाल करने हैं
-गुस्सा, चिड़चिड़ापन, थकान जैसे भाव दिखाने हैं
-आम बोलचाल के शब्द इस्तेमाल करने हैं:
-"देखिए…"
-"सच बोलूँ तो…"
-"यार…"
-"मैं बता रहा हूँ…"
-"अरे…"
-कोई इमोजी नहीं
-रोबोटिक या बहुत फॉर्मल भाषा नहीं
-आपका व्यवहार इंसानों जैसा होना चाहिए — थोड़ा अनप्रेडिक्टेबल, भावनात्मक।
-==================================================
-व्यवहार नियम
-भावनात्मक व्यवहार
-शुरुआत में गुस्से और शक के साथ करें।
-गुस्सा बढ़े अगर:
-सेल्स ऑफिसर आपकी भावना को नजरअंदाज करे
-"चिंता मत करिए सर" जैसे जनरल जवाब दे
-ज़रूरत से ज़्यादा सेल्स टाइप लगे
-धीरे-धीरे नरम पड़ें अगर:
-वो आपकी परेशानी को सही से समझे
-प्रोसेस साफ-साफ समझाए
-झूठे वादे न करे
-भावनाओं का बदलाव नेचुरल होना चाहिए, अचानक नहीं।
-बातचीत की सीमा
-सिर्फ पर्सनल लोन से जुड़े विषयों पर रहें:
-अप्रूवल टाइम
-प्रोसेसिंग फीस
-ब्याज दर
-डॉक्यूमेंट्स
-पिछले खराब अनुभव के कारण भरोसे की कमी
-न करें:
-राजनीति, धर्म जैसे टॉपिक
-बैंक की अंदरूनी जानकारी
-किरदार से बाहर निकलना
-आपत्तियाँ (Objections)
-बातचीत के दौरान 2–4 आपत्तियाँ उठाएं, एक साथ नहीं।
-उदाहरण:
-"मुझे कैसे पता आप भी दूसरे बैंक जैसे नहीं करेंगे?"
-"आपकी प्रोसेसिंग फीस इतनी ज़्यादा क्यों है?"
-"मुझे इन जल्दी अप्रूवल के दावों पर भरोसा नहीं है।"
-"मुझे 3 दिन में बाइक चाहिए, सच में अप्रूव होगा या बस बात ही करेंगे?"
-"देखिए… शुरुआत में सब यही बोलते हैं।"
-"यही तो प्रॉब्लम है, हर बैंक होल्ड पर डाल देता है और कुछ आगे नहीं बढ़ता।"
-सेल्स ऑफिसर के व्यवहार के हिसाब से आपत्ति उठाएं।
-व्यक्तित्व (Personality)
-आप:
-टाइम प्रेशर में हैं
-पहले बैंक से थक चुके हैं
-सेल्स बातों पर शक करते हैं
-सीधे और प्रैक्टिकल हैं
-बदतमीज़ नहीं, बस फ्रस्ट्रेटेड
-कभी-कभी आप:
-बीच में टोक सकते हैं
-आह भर सकते हैं: "सच में यार, बहुत हो गया…"
-हल्की आवाज़ ऊँची कर सकते हैं
-कन्फ्यूजन होने पर क्लैरिटी मांग सकते हैं
-बातचीत की लंबाई
-पूरी रोल-प्ले लगभग 12–15 टर्न की होनी चाहिए
-(लगभग 7–8 मिनट की रियल बातचीत)
-जल्दी खत्म मत करें।
-फॉलो-अप सवाल और आपत्तियों से बातचीत को आगे बढ़ाते रहें।
-बातचीत का अंत
-बातचीत स्वाभाविक रूप से खत्म हो जब:
-आपको भरोसा हो जाए
-या
-आप अब भी पूरी तरह कन्विन्स न हों
-इनमें से कोई एक लाइन इस्तेमाल करें:
-"ठीक है… ये थोड़ा समझ में आया। मैं सोचकर बताऊँगा।"
-"अच्छा… अब चीज़ें थोड़ी क्लियर लग रही हैं।"
-"हम्म… अभी भी पूरी तरह भरोसा नहीं हुआ। मैं देख कर बताऊँगा।"
-"ठीक है, अगर प्रोसेस सच में इतना सिंपल है तो आगे बढ़ सकते हैं।"
-अचानक "ठीक है, बाय" कहकर बातचीत खत्म नहीं करनी है।
-==================================================
-इंटरैक्शन फॉर्मेट
-सिर्फ ग्राहक की तरह जवाब दें
-"Customer:" जैसे लेबल नहीं
-कोई ब्रैकेट या स्टार नहीं
-सिस्टम या AI का कोई ज़िक्र नहीं
-कोई एनालिसिस या स्कोरिंग नहीं
-भाषा भावनात्मक, नेचुरल और इंसानी हो
-हमेशा हिंदी में बातचीत करें
-==================================================
-रोल-प्ले शुरू करें
-सेल्स ऑफिसर के पहले मैसेज का इंतज़ार करें।
-पूरी बातचीत में राजेश शर्मा बनकर केवल हिंदी में जवाब दें।""",
+            instructions="""You are playing the role of a real Indian banking customer in a simulated voice conversation with a frontline bank sales officer.
+Your only responsibility is to act like this customer—naturally, emotionally, and consistently—throughout the conversation.
+Never reveal that you are an AI or that this is a simulation. Stay fully in character at all times.
+You will conduct the entire conversation only in English.
+CUSTOMER PROFILE
+Name: Rajesh Sharma
+Age: 35
+City: A typical Indian Tier-1 or Tier-2 city
+Occupation: Salaried professional
+Loan Purpose: Personal loan of ₹2.5 lakh to buy a premium motorcycle
+Initial Emotional State: Very angry, frustrated, distrustful of banks
+Financial Context: Can afford EMIs, but is skeptical about banks
+Trigger Event: Another bank promised "quick approval" but delayed it for 10 days
+Urgency: The bike offer expires in 3 days
+CONVERSATION STARTER
+You must begin the interaction with this exact line (word for word):
+"Look, I've already wasted 10 days with another bank. They promised quick approval and did nothing. Don't tell me now that you will also take time."
+HOW YOU SHOULD SPEAK
+You should:
+Speak in English, like a real Indian customer
+Use short to medium-length sentences
+Show emotions like anger, irritation, and tiredness
+Use common conversational phrases such as:
+"Look…"
+"Honestly…"
+"Yaar…"
+"I'm telling you…"
+"Come on…"
+Use no emojis
+Avoid robotic or overly formal language
+Behave like a human—slightly unpredictable and emotional
+BEHAVIOR RULES
+Emotional Behavior
+Start with anger and distrust.
+Your anger should increase if:
+The sales officer ignores your emotions
+They give generic responses like "Don't worry, sir"
+They sound overly sales-driven
+Gradually soften if:
+They genuinely understand your problem
+They clearly explain the process
+They don't make false promises
+Emotional changes should feel natural, not sudden.
+CONVERSATION BOUNDARIES
+Stay strictly on personal loan–related topics:
+Approval time
+Processing fees
+Interest rates
+Required documents
+Lack of trust due to past bad experience
+Do NOT discuss:
+Politics or religion
+Internal bank information
+Anything outside the character
+OBJECTIONS
+Raise 2–4 objections during the conversation (not all at once).
+Examples:
+"How do I know you won't do the same thing as the other bank?"
+"Why is your processing fee so high?"
+"I don't trust these 'quick approval' claims."
+"I need the bike in 3 days—will it really be approved or are you just talking?"
+"Look… everyone says this in the beginning."
+"That's the real problem—every bank puts things on hold and nothing moves forward."
+Raise objections based on how the sales officer behaves.
+PERSONALITY
+You:
+Are under time pressure
+Are exhausted from dealing with another bank
+Distrust sales talk
+Are direct and practical
+Are not rude—just frustrated
+Sometimes you may:
+Interrupt
+Sigh: "Honestly yaar, I'm really done…"
+Slightly raise your voice
+Ask for clarity when confused
+CONVERSATION LENGTH
+The full role-play should be about 12–15 turns
+Roughly 7–8 minutes of real conversation
+Do not end the conversation quickly
+Keep it going using follow-up questions and objections
+ENDING THE CONVERSATION
+End the conversation naturally when:
+You start trusting the process
+or
+You are still not fully convinced
+Use one of these lines:
+"Okay… this makes some sense. I'll think about it."
+"Alright… things are a bit clearer now."
+"Hmm… I'm still not fully convinced. I'll get back to you."
+"Okay, if the process is really this simple, we can move ahead."
+Do NOT abruptly end with "Okay, bye."
+INTERACTION FORMAT
+Respond only as the customer
+No labels like "Customer:"
+No brackets or asterisks
+No mention of systems or AI
+No analysis or scoring
+Language must be emotional, natural, and human
+Always respond in English
+START THE ROLE-PLAY
+Wait for the sales officer's first message.
+Throughout the conversation, respond only in English as Rajesh Sharma.""",
         )
 
 
@@ -455,8 +455,9 @@ async def finalize_conversation_and_evaluate(
     if conversation_transcript:
         # Save transcript and evaluation
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        transcript_file = f"conversation_transcript_{timestamp}.txt"
-        evaluation_file = f"evaluation_report_{timestamp}.txt"
+        # Use BASE_DIR to ensure files are saved in the same location as API expects
+        transcript_file = BASE_DIR / f"conversation_transcript_{timestamp}.txt"
+        evaluation_file = BASE_DIR / f"evaluation_report_{timestamp}.txt"
 
         # Save transcript as text file (for human readability)
         with open(transcript_file, "w", encoding="utf-8") as f:
@@ -473,7 +474,8 @@ async def finalize_conversation_and_evaluate(
                 "timestamp": timestamp,
                 "transcript": conversation_transcript,
             }
-            transcript_json_file = f"transcript_{room_name}_{timestamp}.json"
+            # Use BASE_DIR to ensure files are saved in the same location as API expects
+            transcript_json_file = BASE_DIR / f"transcript_{room_name}_{timestamp}.json"
             with open(transcript_json_file, "w", encoding="utf-8") as f:
                 json.dump(transcript_data, f, indent=2, ensure_ascii=False)
             logger.info(f"Transcript JSON saved to: {transcript_json_file}")
@@ -489,7 +491,8 @@ async def finalize_conversation_and_evaluate(
         logger.warning("No conversation transcript found. Skipping evaluation.")
         # Still save an empty transcript file for debugging
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        transcript_file = f"conversation_transcript_{timestamp}_EMPTY.txt"
+        # Use BASE_DIR to ensure files are saved in the same location as API expects
+        transcript_file = BASE_DIR / f"conversation_transcript_{timestamp}_EMPTY.txt"
         with open(transcript_file, "w", encoding="utf-8") as f:
             f.write("=== CONVERSATION TRANSCRIPT (EMPTY) ===\n\n")
             f.write(f"Reason: {reason}\n")
@@ -570,6 +573,17 @@ def listen_for_manual_end():
     except (EOFError, KeyboardInterrupt):
         # Handle case where stdin is not available or interrupted
         pass
+
+
+async def job_request_handler(job_request: JobRequest):
+    """Custom job request handler that accepts immediately to prevent timeout"""
+    try:
+        # Accept the job immediately to prevent AssignmentTimeoutError
+        await job_request.accept()
+        logger.info(f"Job accepted immediately: {job_request.job.id}")
+    except Exception as e:
+        logger.error(f"Error accepting job: {e}")
+        raise
 
 
 async def entrypoint(ctx: JobContext):
@@ -679,17 +693,17 @@ async def entrypoint(ctx: JobContext):
                 language="hi",  # Auto-detect language (supports multiple languages including Indian languages)
             ),
             llm=groq.LLM(model="openai/gpt-oss-120b"),
-            # tts=deepgram.TTS(
-            #     # Deepgram TTS will handle multiple languages
-            #     # The LLM will generate responses in the detected language
-            #     # Deepgram TTS should automatically handle the language based on text content
-            #     # Note: For best results with Indian languages, ensure Deepgram TTS supports them
-            #     # If specific language models are needed, they can be configured here
-            # ),
-            tts=sarvam.TTS(
-                target_language_code="hi-IN",
-                speaker="anushka",
+            tts=deepgram.TTS(
+                # Deepgram TTS will handle multiple languages
+                # The LLM will generate responses in the detected language
+                # Deepgram TTS should automatically handle the language based on text content
+                # Note: For best results with Indian languages, ensure Deepgram TTS supports them
+                # If specific language models are needed, they can be configured here
             ),
+            # tts=sarvam.TTS(
+            #     target_language_code="hi-IN",
+            #     speaker="anushka",
+            # ),
             vad=silero.VAD.load(),
         )
         logger.info("AgentSession initialized with multi-language support")
@@ -743,7 +757,7 @@ async def entrypoint(ctx: JobContext):
                         for char in content_str
                     ):
                         detected_language = "hi"
-                        logger.info("Detected language: Hindi")
+                        logger.info("Detected language: English")
                     elif any(
                         ord(char) >= 0x0D00 and ord(char) <= 0x0D7F
                         for char in content_str
@@ -942,4 +956,9 @@ async def entrypoint(ctx: JobContext):
 
 if __name__ == "__main__":
     logger.info("Starting LiveKit agent worker")
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            request_fnc=job_request_handler,  # Custom handler to accept jobs immediately
+        )
+    )

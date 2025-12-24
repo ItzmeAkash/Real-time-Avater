@@ -752,3 +752,5 @@ async def entrypoint(ctx: JobContext):
 if __name__ == "__main__":
     logger.info("Starting LiveKit agent worker")
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+
+

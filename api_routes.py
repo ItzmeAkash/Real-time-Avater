@@ -502,9 +502,18 @@ async def process_evaluation():
     try:
         # Search for all transcript text files
         transcript_pattern = str(BASE_DIR / "conversation_transcript_*.txt")
+        logger.info(f"Looking for transcript files in: {BASE_DIR}")
+        logger.info(f"Search pattern: {transcript_pattern}")
         matching_files = glob.glob(transcript_pattern)
+        logger.info(f"Found {len(matching_files)} matching transcript files")
 
         if not matching_files:
+            # Log directory contents for debugging
+            try:
+                all_files = list(BASE_DIR.glob("*"))
+                logger.warning(f"BASE_DIR contents: {[f.name for f in all_files]}")
+            except Exception as e:
+                logger.warning(f"Could not list BASE_DIR contents: {e}")
             raise HTTPException(
                 status_code=404,
                 detail="No transcript file found. Please wait for the conversation to complete.",

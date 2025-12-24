@@ -1,0 +1,58 @@
+=== CONVERSATION TRANSCRIPT ===
+
+[2025-12-24T20:00:19.647326] Salesperson: Hi. This is Silal. How may I help you?
+[2025-12-24T20:00:30.971817] Customer: Look, I’ve already wasted 10 days with another bank. They promised quick approval and did nothing. Don’t tell me now that you will also take time.
+[2025-12-24T20:00:36.340202] Salesperson: Sorry to hear that.
+[2025-12-24T20:00:36.419583] Salesperson: Let me see how best I can help you.
+[2025-12-24T20:00:53.538757] Customer: Honestly, yaar, I’m not interested in apologies. I need a personal loan of ₹2.5 lakh for a bike, and I have only three days left before the offer ends. How fast can you actually approve it? And why should I believe you won’t stall like the other bank?
+[2025-12-24T20:01:00.352285] Salesperson: Give me a minute to check the system and see, what the issue was.
+[2025-12-24T20:01:00.589012] Salesperson: May I put you on hold for a minute?
+[2025-12-24T20:01:14.196218] Customer: Look, I don’t have time to wait on hold. I’m already losing patience. Tell me straight—what’s the real approval timeline? And what documents do you need right now?
+[2025-12-24T20:01:20.898135] Salesperson: I
+[2025-12-24T20:01:27.656864] Salesperson: checked the system and there is a mismatch in your name to complete the KYC. Do The name provided in आधार and your salary slip does not match.
+[2025-12-24T20:01:27.877765] Salesperson: And the system does not allow to proceed further on it.
+[2025-12-24T20:01:47.968700] Salesperson: I'm sorry.
+[2025-12-24T20:01:48.258748] Customer: What? Seriously? You’re saying my name doesn’t match on my own Aadhar and salary slip? I’ve got the same name everywhere, Rajesh Sharma. This is just another excuse to delay things. Fix it now, tell me exactly what you need, and don’t give me any more run‑around. I don’t have another day to waste.
+[2025-12-24T20:01:49.866587] Customer: Yaar, this is exactly what I’m talking about. First you say you’ll help, now you hit a “mismatch” and stall. I’m telling you—I have the correct Aadhaar and salary slip right here. What do you need from me to fix this instantly? And still, will you guarantee the loan is disbursed within the next two days?Look, I’m not going to send you copies and wait for another back‑and‑forth. Just tell me what exact document you need right now, and confirm—once I give it, will you process the loan today and have the money in my account by tomorrow? I can’t afford another 10‑day delay.
+[2025-12-24T20:01:55.857317] Salesperson: I'm sorry. The salary slip, in the salary slip, name is राजेश
+[2025-12-24T20:01:57.782565] Salesperson: शर्मा where the h is missing in शर्मा. Can you re share your salary slip?
+[2025-12-24T20:02:16.726400] Salesperson: तो
+[2025-12-24T20:02:17.536202] Customer: Look… you’re telling me the ‘h’ is missing? That’s ridiculous. My salary slip clearly says Rajesh Sharma, same as my Aadhaar. I’ve got a printed copy right here. Should I email you a scanned copy, or do you need a fresh one from HR? And just to be clear—once I send that, will you
+[2025-12-24T20:02:43.622194] Salesperson: जी
+[2025-12-24T20:02:43.936242] Customer: Look, I’m already irritated. If the slip just has “Rajesh Sharma” without the ‘h’, that’s a typo you can’t accept, right? I’ll send you a clear, updated salary slip with my full name exactly as on my Aadhaar. Send me an email address or WhatsApp number right now, and I’ll forward it instantly. Once you get the correct slip, will you finish the KYC and approve the loan today? I need the money by tomorrow, no more excuses.
+[2025-12-24T20:02:46.184547] Customer: Honestly, yaar, I’m done with this back‑and‑forth in Hindi. Just give me a straight answer in English.  
+
+1. If I email you a clear scan of the salary slip right now, will you fix the KYC mismatch instantly?  
+2. How long will it take after that to get the loan approved and the money transferred?  
+3. What is the processing fee you’re charging for
+[2025-12-24T20:02:48.249642] Salesperson: Yes. Once I get the salary slip.
+[2025-12-24T20:02:52.155351] Salesperson: I will personally ensure
+[2025-12-24T20:02:53.557195] Salesperson: twenty four hours, your loan will be sanctioned, and you can take the most valued bike.
+[2025-12-24T20:02:55.739421] Salesperson: We are here to help you, get your dreams fulfilled, sir.
+[2025-12-24T20:03:26.187173] Customer: Look… I’m not buying the “most valued bike” talk. I need hard facts.
+
+1. You said 24 hours after you get the slip. That means if I send it right now, the loan will be approved by tomorrow morning, right?
+2. What exactly is the processing fee you’re charging for this ₹2.5 lakh loan? I don’t want any hidden charges.
+3. And what interest rate am I looking at? I need to know the EMI amount so I can be sure I can afford it.
+
+Give me those numbers straight, no vague promises.
+[2025-12-24T20:03:33.259288] Salesperson: Yeah. I think all the details were already given to you in the
+[2025-12-24T20:03:36.907881] Salesperson: loan agreement that was sent to you over email. You could just go through the
+[2025-12-24T20:03:39.808413] Salesperson: same and let me know if you have any
+[2025-12-24T20:03:45.008666] Salesperson: you can callback if, you if you have any confusion. However, I
+[2025-12-24T20:03:50.053465] Salesperson: checked again, and I see there's only one red flag in your KYC. So
+[2025-12-24T20:03:52.005820] Salesperson: once your KYC is approved, I'll ensure all the steps are completed in four hours, and you will get your
+[2025-12-24T20:03:52.289933] Salesperson: you'll also get a notification from our system.
+[2025-12-24T20:04:30.025307] Customer: Look, I’m not interested in “notifications” or vague steps. I’ve already told you I have the correct documents ready.  
+
+- Send me the exact email address or WhatsApp number right now and I’ll forward the updated salary slip immediately.  
+- Once you receive it, confirm that the KYC mismatch will be cleared **within the next hour**.  
+- After the KYC is cleared, you said the loan will be sanctioned in four hours—so that means I should have the money in my bank account **by tomorrow morning**, correct?  
+
+Now give me
+[2025-12-24T20:04:38.952192] Salesperson: That's that's right. That's right. Don't worry, sir. Once you share your corrected salary slip,
+[2025-12-24T20:04:38.993548] Salesperson: we can move forward quickly, and I'll have my email address
+[2025-12-24T20:04:46.813672] Salesperson: sent to you over WhatsApp. Do send it to me, and we'll make sure it gets
+[2025-12-24T20:04:46.956465] Salesperson: sanctioned quickly. Once it's sanctioned, it takes maximum about four to eight hours for the amount to hit your
+[2025-12-24T20:04:47.292907] Salesperson: account.
+[2025-12-24T20:05:07.619284] Salesperson: That's right.
