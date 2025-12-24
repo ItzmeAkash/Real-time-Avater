@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 from dotenv import load_dotenv
 import logging
+from datetime import datetime
+from collections import defaultdict
 
 load_dotenv()
 
@@ -15,6 +17,10 @@ router = APIRouter()
 
 # Get the base directory (where the script is located)
 BASE_DIR = Path(__file__).parent.absolute()
+
+# In-memory storage for real-time session transcripts
+# Format: {room_name: [{"role": "...", "message": "...", "timestamp": "..."}, ...]}
+active_session_transcripts: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
 
 # Request models for POST requests
@@ -32,6 +38,21 @@ class TranscriptEntry(BaseModel):
 
 class EvaluationRequest(BaseModel):
     transcript: List[TranscriptEntry]
+
+
+class ConversationEvaluationRequest(BaseModel):
+    """Request model for conversation evaluation endpoint"""
+
+    conversation: Optional[List[Dict[str, str]]] = None
+    transcript: Optional[List[TranscriptEntry]] = None
+    # Allow raw text format as well
+    messages: Optional[List[Dict[str, str]]] = None
+
+
+class RawConversationRequest(BaseModel):
+    """Request model for raw conversation text evaluation"""
+
+    conversation_text: str  # Raw conversation text like from transcript file
 
 
 def _generate_token(identity: str, name: str, room: str):
@@ -493,6 +514,183 @@ async def evaluate_room(room_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def parse_conversation_text(conversation_text: str) -> List[Dict[str, str]]:
+    """
+    Parse raw conversation text (like from transcript file) into structured format.
+    Handles format: [timestamp] Role: message
+    """
+    transcript = []
+    for line in conversation_text.split("\n"):
+        line = line.strip()
+        # Skip empty lines and header lines
+        if not line or line.startswith("==="):
+            continue
+        # Parse format: [timestamp] Role: message
+        if "] " in line and ": " in line:
+            try:
+                # Split timestamp and rest
+                parts = line.split("] ", 1)
+                if len(parts) == 2:
+                    timestamp = parts[0].replace("[", "")
+                    role_message = parts[1]
+                    # Split role and message
+                    if ": " in role_message:
+                        role_parts = role_message.split(": ", 1)
+                        if len(role_parts) == 2:
+                            role = role_parts[0].strip()
+                            message = role_parts[1].strip()
+                            if role and message:
+                                transcript.append({
+                                    "role": role,
+                                    "message": message,
+                                    "timestamp": timestamp,
+                                })
+            except Exception as e:
+                logger.warning(f"Error parsing line: {line} - {e}")
+                continue
+    return transcript
+
+
+@router.post("/evaluate-raw-conversation")
+async def evaluate_raw_conversation(request_body: RawConversationRequest):
+    """
+    Evaluate a raw conversation text passed in the payload.
+    Accepts the conversation text directly (like from transcript file) and parses it automatically.
+
+    Example payload:
+    {
+        "conversation_text": "[2025-12-24T20:00:19] Salesperson: Hi. This is Silal. How may I help you?\n[2025-12-24T20:00:30] Customer: Look, I've already wasted 10 days..."
+    }
+    """
+    try:
+        if (
+            not request_body.conversation_text
+            or not request_body.conversation_text.strip()
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="conversation_text cannot be empty. Please provide the conversation text.",
+            )
+
+        logger.info(f"Received raw conversation text evaluation request")
+        logger.debug(
+            f"Conversation text length: {len(request_body.conversation_text)} characters"
+        )
+
+        # Parse the raw conversation text
+        transcript_dict = parse_conversation_text(request_body.conversation_text)
+
+        if not transcript_dict:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not parse conversation text. Please ensure the format is: [timestamp] Role: message",
+            )
+
+        logger.info(f"Parsed {len(transcript_dict)} messages from conversation text")
+
+        # Generate evaluation
+        evaluation_report = await evaluate_conversation(transcript_dict)
+
+        return {
+            "status": "success",
+            "evaluation": evaluation_report,
+            "transcript": transcript_dict,
+            "transcript_count": len(transcript_dict),
+            "message": "Evaluation completed successfully",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in evaluate-raw-conversation endpoint: {e}")
+        import traceback
+
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, detail=f"Error evaluating conversation: {str(e)}"
+        )
+
+
+@router.post("/evaluate-conversation")
+async def evaluate_conversation_endpoint(request_body: ConversationEvaluationRequest):
+    """
+    Evaluate a conversation transcript passed in the request payload.
+    Accepts multiple input formats:
+    - conversation: List of dicts with 'role' and 'message' keys
+    - transcript: List of TranscriptEntry objects
+    - messages: List of dicts with 'role' and 'message' keys (alias for conversation)
+    """
+    try:
+        transcript_dict = []
+
+        # Try to get transcript from different possible fields
+        if request_body.conversation:
+            # Format: [{"role": "Salesperson", "message": "Hello"}, ...]
+            transcript_dict = [
+                {
+                    "role": entry.get("role", ""),
+                    "message": entry.get("message", ""),
+                    "timestamp": entry.get("timestamp", ""),
+                }
+                for entry in request_body.conversation
+            ]
+        elif request_body.messages:
+            # Format: [{"role": "Salesperson", "message": "Hello"}, ...]
+            transcript_dict = [
+                {
+                    "role": entry.get("role", ""),
+                    "message": entry.get("message", ""),
+                    "timestamp": entry.get("timestamp", ""),
+                }
+                for entry in request_body.messages
+            ]
+        elif request_body.transcript:
+            # Format: List of TranscriptEntry objects
+            transcript_dict = [
+                {
+                    "role": entry.role,
+                    "message": entry.message,
+                    "timestamp": entry.timestamp or "",
+                }
+                for entry in request_body.transcript
+            ]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="No conversation data provided. Please provide 'conversation', 'messages', or 'transcript' field.",
+            )
+
+        if not transcript_dict:
+            raise HTTPException(
+                status_code=400,
+                detail="Transcript cannot be empty. Please provide at least one conversation entry.",
+            )
+
+        logger.info(
+            f"Received conversation evaluation request with {len(transcript_dict)} messages"
+        )
+
+        # Generate evaluation
+        evaluation_report = await evaluate_conversation(transcript_dict)
+
+        return {
+            "status": "success",
+            "evaluation": evaluation_report,
+            "transcript": transcript_dict,
+            "transcript_count": len(transcript_dict),
+            "message": "Evaluation completed successfully",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in evaluate-conversation endpoint: {e}")
+        import traceback
+
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, detail=f"Error evaluating conversation: {str(e)}"
+        )
+
+
 @router.get("/process-evaluation")
 async def process_evaluation():
     """
@@ -608,6 +806,447 @@ async def process_evaluation():
     except Exception as e:
         logger.error(f"Error processing evaluation: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/update-transcript/{room_name}")
+async def update_transcript(room_name: str, entry: TranscriptEntry):
+    """
+    Update transcript in real-time for an active session.
+    Called by the agent process to store transcripts in memory.
+    """
+    try:
+        entry_dict = {
+            "role": entry.role,
+            "message": entry.message,
+            "timestamp": entry.timestamp or datetime.now().isoformat(),
+        }
+        active_session_transcripts[room_name].append(entry_dict)
+        logger.info(
+            f"Updated transcript for room '{room_name}': {entry.role} - {entry.message[:50]}..."
+        )
+        return {
+            "status": "success",
+            "room": room_name,
+            "message": "Transcript updated",
+            "total_messages": len(active_session_transcripts[room_name]),
+        }
+    except Exception as e:
+        logger.error(f"Error updating transcript: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/update-transcript-batch/{room_name}")
+async def update_transcript_batch(room_name: str, transcript: List[TranscriptEntry]):
+    """
+    Update transcript in bulk for a room (useful when initializing or syncing).
+    Can also be called with empty array to initialize room in memory.
+    """
+    try:
+        active_session_transcripts[room_name] = [
+            {
+                "role": entry.role,
+                "message": entry.message,
+                "timestamp": entry.timestamp or datetime.now().isoformat(),
+            }
+            for entry in transcript
+        ]
+        if len(transcript) > 0:
+            logger.info(
+                f"Updated transcript batch for room '{room_name}': {len(transcript)} messages"
+            )
+        else:
+            logger.info(
+                f"Initialized room '{room_name}' in in-memory storage (empty transcript)"
+            )
+        return {
+            "status": "success",
+            "room": room_name,
+            "message": "Transcript batch updated"
+            if len(transcript) > 0
+            else "Room initialized",
+            "total_messages": len(active_session_transcripts[room_name]),
+        }
+    except Exception as e:
+        logger.error(f"Error updating transcript batch: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/clear-transcript/{room_name}")
+async def clear_transcript(room_name: str):
+    """
+    Clear transcript from in-memory storage (called when session ends).
+    """
+    try:
+        if room_name in active_session_transcripts:
+            count = len(active_session_transcripts[room_name])
+            del active_session_transcripts[room_name]
+            logger.info(f"Cleared transcript for room '{room_name}' ({count} messages)")
+            return {
+                "status": "success",
+                "room": room_name,
+                "message": f"Cleared {count} messages from memory",
+            }
+        else:
+            return {
+                "status": "success",
+                "room": room_name,
+                "message": "No transcript found to clear",
+            }
+    except Exception as e:
+        logger.error(f"Error clearing transcript: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/conversation-history/{room_name}")
+async def get_conversation_history(room_name: str):
+    """
+    Get complete conversation history for a specific room.
+    First checks in-memory storage (real-time), then LiveKit API, then saved files.
+    Returns empty array if room exists in memory but has no messages yet (active session).
+    """
+    try:
+        # First, check in-memory storage for active sessions (real-time)
+        if room_name in active_session_transcripts:
+            transcript = active_session_transcripts[room_name]
+            if transcript:
+                logger.info(
+                    f"Returning {len(transcript)} conversation entries for room: {room_name} from in-memory storage (real-time)"
+                )
+            else:
+                logger.info(
+                    f"Room '{room_name}' found in memory but transcript is empty (active session, no messages yet)"
+                )
+            return {
+                "status": "success",
+                "room": room_name,
+                "transcript": transcript,  # Complete conversation array (may be empty for new sessions)
+                "total_messages": len(transcript),
+                "source": "in_memory_realtime",
+            }
+
+        # Second, try to get transcript from LiveKit Cloud API
+        result = await get_transcript_from_livekit_api(room_name)
+
+        if result and result.get("transcript"):
+            logger.info(
+                f"Returning {len(result['transcript'])} conversation entries for room: {room_name} from LiveKit API"
+            )
+            return {
+                "status": "success",
+                "room": room_name,
+                "transcript": result["transcript"],  # Complete conversation array
+                "total_messages": len(result["transcript"]),
+                "source": result.get("source", "livekit_api"),
+            }
+
+        # Third, try saved files
+        logger.info(
+            f"In-memory and LiveKit API don't have transcript for room {room_name}, trying saved files..."
+        )
+        result = await get_transcript_from_livekit_history(room_name)
+
+        if result and result.get("transcript"):
+            logger.info(
+                f"Returning {len(result['transcript'])} conversation entries for room: {room_name} from saved files"
+            )
+            return {
+                "status": "success",
+                "room": room_name,
+                "transcript": result["transcript"],  # Complete conversation array
+                "total_messages": len(result["transcript"]),
+                "source": result.get("source", "saved_files"),
+            }
+
+        # Final fallback to other saved files
+        logger.info(
+            f"Saved transcript files not found for room {room_name}, trying other fallback sources..."
+        )
+        result = await get_transcript_fallback(room_name)
+
+        # Ensure we return the complete transcript
+        if result and result.get("transcript"):
+            logger.info(
+                f"Returning {len(result['transcript'])} conversation entries for room: {room_name} from fallback source"
+            )
+            return {
+                "status": "success",
+                "room": room_name,
+                "transcript": result["transcript"],  # Complete conversation array
+                "total_messages": len(result["transcript"]),
+                "source": result.get("source", "unknown"),
+            }
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No conversation history found for room: {room_name}",
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting conversation history: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving conversation history: {str(e)}",
+        )
+
+
+async def get_transcript_from_livekit_api(room_name: str):
+    """
+    Try to get transcript from LiveKit Cloud API directly.
+
+    IMPORTANT LIMITATION: LiveKit's REST API does NOT provide transcript/conversation history.
+    This is a limitation of LiveKit's API design. Transcripts are only available:
+    1. During active sessions via session.history (in agent code)
+    2. From saved files after session ends (saved in main.py from session.history)
+
+    This function verifies the room exists but cannot retrieve transcripts via REST API.
+    """
+    try:
+        # Get LiveKit API credentials
+        api_key = os.getenv("LIVEKIT_API_KEY")
+        api_secret = os.getenv("LIVEKIT_API_SECRET")
+        livekit_url = os.getenv("LIVEKIT_URL", "")
+
+        if not api_key or not api_secret or not livekit_url:
+            logger.info(
+                f"LiveKit API credentials not configured. "
+                f"Cannot query LiveKit Cloud for room {room_name}. "
+                f"Will use saved transcript files instead."
+            )
+            return None
+
+        # Import LiveKit API
+        try:
+            from livekit import api as livekit_api
+        except ImportError:
+            logger.info(
+                f"LiveKit API package not available. "
+                f"Cannot query LiveKit Cloud for room {room_name}. "
+                f"Will use saved transcript files instead."
+            )
+            return None
+
+        # Create LiveKit API client
+        try:
+            livekit_api_client = livekit_api.LiveKitAPI(
+                url=livekit_url,
+                api_key=api_key,
+                api_secret=api_secret,
+            )
+
+            # Try to verify room exists via LiveKit API
+            # NOTE: LiveKit REST API has NO endpoint for transcripts/history
+            # We can only check if room exists, but cannot get conversation data
+            try:
+                room_service = livekit_api.RoomService(livekit_api_client)
+                # LiveKit API is typically synchronous
+                room_info = room_service.list_rooms(names=[room_name])
+
+                if (
+                    room_info
+                    and hasattr(room_info, "rooms")
+                    and len(room_info.rooms) > 0
+                ):
+                    room = room_info.rooms[0]
+                    logger.info(
+                        f"✓ Room '{room_name}' verified via LiveKit Cloud API. "
+                        f"Room has {getattr(room, 'num_participants', 0)} participants. "
+                        f"However, LiveKit REST API does NOT provide transcript access. "
+                        f"This is a limitation of LiveKit's API - transcripts are only available "
+                        f"from session.history during active sessions or from saved files. "
+                        f"Falling back to saved transcript files..."
+                    )
+                else:
+                    logger.info(
+                        f"Room '{room_name}' not found in LiveKit Cloud (may have ended). "
+                        f"Will check saved transcript files."
+                    )
+            except Exception as e:
+                logger.info(
+                    f"Could not verify room via LiveKit API: {e}. "
+                    f"This is OK - room may have ended. Will check saved transcript files."
+                )
+        except Exception as e:
+            logger.warning(f"Error creating LiveKit API client: {e}")
+            # Continue to fallback
+
+        # LiveKit REST API does NOT provide transcript access - this is by design
+        # Transcripts must come from saved files (saved from session.history in main.py)
+        logger.info(
+            f"LiveKit REST API cannot provide transcripts (API limitation). "
+            f"Transcripts are saved to files in main.py from session.history. "
+            f"Checking saved files for room '{room_name}'..."
+        )
+        return None
+
+    except Exception as e:
+        logger.warning(f"Error querying LiveKit API: {e}")
+        import traceback
+
+        logger.debug(traceback.format_exc())
+        logger.info(f"Will fall back to saved transcript files for room '{room_name}'")
+        return None
+
+
+async def get_transcript_from_livekit_history(room_name: str):
+    """
+    Get transcript from LiveKit session history (saved as transcript JSON files).
+    These files are saved directly from session.history in main.py and are the most accurate source.
+    This is the PRIMARY source since LiveKit REST API doesn't provide transcripts.
+    """
+    try:
+        # Search for transcript JSON files saved from LiveKit session.history
+        # These are saved in main.py with format: transcript_{room_name}_{timestamp}.json
+        transcript_json_pattern = str(BASE_DIR / f"transcript_{room_name}_*.json")
+        logger.info(
+            f"Searching for transcript files matching pattern: {transcript_json_pattern}"
+        )
+        transcript_json_files = glob.glob(transcript_json_pattern)
+        logger.info(
+            f"Found {len(transcript_json_files)} transcript JSON file(s) for room '{room_name}': {transcript_json_files}"
+        )
+
+        if transcript_json_files:
+            # Get the most recent transcript file (by modification time, not creation time)
+            # This ensures we get the latest version if the file was updated
+            latest_json = max(transcript_json_files, key=os.path.getmtime)
+            logger.info(
+                f"✓ Loading transcript from LiveKit session history file: {latest_json}"
+            )
+
+            with open(latest_json, "r", encoding="utf-8") as f:
+                transcript_data = json.load(f)
+
+            # Handle different JSON structures
+            if isinstance(transcript_data, list):
+                transcript = transcript_data
+                logger.info(f"Transcript data is a list with {len(transcript)} entries")
+            elif isinstance(transcript_data, dict):
+                # Check if this is the format saved in main.py: {"room": ..., "timestamp": ..., "transcript": ...}
+                transcript = transcript_data.get("transcript", [])
+                logger.info(
+                    f"Transcript data is a dict. Found 'transcript' key with {len(transcript)} entries. "
+                    f"Room in file: {transcript_data.get('room')}, Timestamp: {transcript_data.get('timestamp')}"
+                )
+                # Verify the room name matches
+                if transcript_data.get("room") != room_name:
+                    logger.warning(
+                        f"Room name mismatch: expected '{room_name}', got '{transcript_data.get('room')}'. "
+                        f"Using transcript anyway."
+                    )
+            else:
+                transcript = []
+                logger.warning(
+                    f"Unexpected transcript data format: {type(transcript_data)}"
+                )
+
+            if transcript:
+                logger.info(
+                    f"✓ Successfully loaded {len(transcript)} conversation entries from LiveKit session history "
+                    f"(saved from session.history in main.py)"
+                )
+                return {
+                    "status": "success",
+                    "room": room_name,
+                    "transcript": transcript,  # Complete conversation array
+                    "source": "livekit_session_history",
+                }
+            else:
+                logger.warning(
+                    f"Transcript file found but transcript array is empty for room '{room_name}'"
+                )
+
+        # No transcript JSON files found
+        logger.info(
+            f"No transcript JSON files found for room '{room_name}' matching pattern: transcript_{room_name}_*.json"
+        )
+        return None
+
+    except Exception as e:
+        logger.error(f"Error getting transcript from LiveKit history: {e}")
+        import traceback
+
+        logger.debug(traceback.format_exc())
+        return None
+
+
+async def get_transcript_fallback(room_name: str):
+    """Get complete transcript from saved files - returns entire conversation (fallback when LiveKit history not available)"""
+    try:
+        # First, check for evaluation JSON files matching the room name
+        pattern = str(BASE_DIR / f"evaluation_{room_name}_*.json")
+        matching_files = glob.glob(pattern)
+
+        if matching_files:
+            latest_file = max(matching_files, key=os.path.getctime)
+            logger.info(f"Loading transcript from evaluation file: {latest_file}")
+            with open(latest_file, "r", encoding="utf-8") as f:
+                evaluation_data = json.load(f)
+
+            transcript = evaluation_data.get("transcript", [])
+            logger.info(
+                f"Found {len(transcript)} conversation entries in evaluation file"
+            )
+
+            return {
+                "status": "success",
+                "room": room_name,
+                "transcript": transcript,  # Complete conversation array
+                "source": "evaluation_file",
+            }
+
+        # Fallback: check for text transcript files
+        transcript_pattern = str(BASE_DIR / "conversation_transcript_*.txt")
+        all_transcript_files = glob.glob(transcript_pattern)
+
+        if all_transcript_files:
+            # Get the most recent transcript file
+            latest_transcript = max(all_transcript_files, key=os.path.getctime)
+            logger.info(f"Loading transcript from text file: {latest_transcript}")
+
+            with open(latest_transcript, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            transcript = []
+            for line in content.split("\n"):
+                if line.strip() and not line.startswith("==="):
+                    # Parse format: [timestamp] Role: message
+                    if "] " in line:
+                        parts = line.split("] ", 1)
+                        if len(parts) == 2:
+                            role_part = parts[1].split(": ", 1)
+                            if len(role_part) == 2:
+                                transcript.append({
+                                    "role": role_part[0].strip(),
+                                    "message": role_part[1].strip(),
+                                    "timestamp": parts[0].replace("[", "").strip(),
+                                })
+
+            logger.info(f"Parsed {len(transcript)} conversation entries from text file")
+
+            return {
+                "status": "success",
+                "room": room_name,
+                "transcript": transcript,  # Complete conversation array
+                "source": "transcript_file",
+            }
+
+        raise HTTPException(
+            status_code=404,
+            detail=f"No conversation history found for room: {room_name}",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in transcript fallback: {e}")
+        import traceback
+
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving conversation history: {str(e)}",
+        )
 
 
 @router.get("/health")

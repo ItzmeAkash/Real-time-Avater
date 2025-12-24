@@ -5,7 +5,6 @@ import {
   RoomAudioRenderer,
   useTracks,
   RoomContext,
-  useRoom,
 } from '@livekit/components-react';
 import { Room, Track, ConnectionState, RoomEvent, DataPacket_Kind } from 'livekit-client';
 import '@livekit/components-styles';
@@ -59,6 +58,8 @@ const AgentVideoComponent = () => {
   const [evaluationResult, setEvaluationResult] = useState(null);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [showEvaluation, setShowEvaluation] = useState(false);
+  const [isEvaluationProcessing, setIsEvaluationProcessing] = useState(false);
+  const [evaluationCompleted, setEvaluationCompleted] = useState(false);
   const transcriptRef = useRef([]);
   const roomInfoRef = useRef({ room: null });
 
@@ -71,74 +72,79 @@ const AgentVideoComponent = () => {
     };
     transcriptRef.current = [...transcriptRef.current, entry];
     setConversationTranscript([...transcriptRef.current]);
-    console.log('Transcript updated:', transcriptRef.current);
+    console.log('=== TRANSCRIPT UPDATED ===');
+    console.log('New entry:', entry);
+    console.log('Total entries:', transcriptRef.current.length);
+    console.log('Full transcript:', JSON.stringify(transcriptRef.current, null, 2));
   };
 
-  // Function to process evaluation (reads most recent transcript.txt, generates evaluation, returns both)
-  const processEvaluation = async (setLoading = true) => {
-    if (setLoading) {
-      setIsEvaluating(true);
+  // Function to format transcript to raw text format (like transcript file)
+  const formatTranscriptToRawText = (transcript) => {
+    if (!transcript || transcript.length === 0) {
+      return '';
     }
+    
+    // Format: [timestamp] Role: message
+    const lines = transcript.map(entry => {
+      const timestamp = entry.timestamp || new Date().toISOString();
+      return `[${timestamp}] ${entry.role}: ${entry.message}`;
+    });
+    
+    // Add header like the transcript file
+    const formattedText = `=== CONVERSATION TRANSCRIPT ===\n\n${lines.join('\n')}`;
+    
+    console.log(`=== FORMATTED CONVERSATION FOR EVALUATION ===`);
+    console.log(`Total messages: ${transcript.length}`);
+    console.log(`Formatted text length: ${formattedText.length} characters`);
+    console.log(`First 500 chars: ${formattedText.substring(0, 500)}...`);
+    
+    return formattedText;
+  };
+
+  // Function to fetch conversation history from LiveKit via backend
+  const fetchConversationHistory = async (roomName) => {
+    if (!roomName) {
+      console.log('No room name provided to fetch conversation history');
+      return null;
+    }
+
     try {
-      console.log('Processing evaluation from most recent transcript file...');
-      console.log('Waiting for transcript to be ready and generating evaluation...');
+      // Try the new conversation history endpoint first (tries LiveKit API and falls back to files)
+      console.log(`Fetching conversation history from LiveKit for room: ${roomName}`);
+      const historyResponse = await axiosInstance.get(`/conversation-history/${roomName}`);
       
-      // Call the new endpoint that processes the most recent transcript file
-      const response = await axiosInstance.get(`/process-evaluation`);
-      
-      console.log('Process evaluation response:', response.data);
-      console.log('Full response structure:', JSON.stringify(response.data, null, 2));
-      
-      // Handle different response structures
-      if (response.data) {
-        // Check if it's an error message
-        if (response.data.detail && response.data.detail.includes('No transcript')) {
-          console.log('Transcript not ready yet');
-          return null;
-        }
-        
-        // Return the evaluation text
-        const evaluation = response.data.evaluation || 
-                          response.data.result || 
-                          response.data.data ||
-                          response.data.text ||
-                          response.data.message ||
-                          (response.data.detail && !response.data.detail.includes('No transcript') ? response.data.detail : null);
-        
-        if (evaluation) {
-          // Also update transcript if available
-          if (response.data.transcript && response.data.transcript.length > 0) {
-            setConversationTranscript(response.data.transcript);
-            transcriptRef.current = response.data.transcript;
-          }
-          return evaluation;
-        }
-        
-        return null;
+      if (historyResponse.data && historyResponse.data.transcript && historyResponse.data.transcript.length > 0) {
+        console.log(`Fetched ${historyResponse.data.transcript.length} transcript entries from conversation history`);
+        transcriptRef.current = historyResponse.data.transcript;
+        setConversationTranscript(historyResponse.data.transcript);
+        return historyResponse.data.transcript;
       }
+
+      // Fallback to transcript endpoint
+      console.log(`Falling back to transcript endpoint for room: ${roomName}`);
+      const response = await axiosInstance.get(`/transcript/${roomName}`);
+      
+      if (response.data && response.data.transcript && response.data.transcript.length > 0) {
+        console.log(`Fetched ${response.data.transcript.length} transcript entries from transcript endpoint`);
+        transcriptRef.current = response.data.transcript;
+        setConversationTranscript(response.data.transcript);
+        return response.data.transcript;
+      }
+      
+      console.log('No transcript found in either endpoint');
       return null;
     } catch (error) {
-      console.error('Error processing evaluation:', error);
+      console.error('Error fetching conversation history:', error);
       if (error.response) {
         console.error('Error response status:', error.response.status);
         console.error('Error response data:', error.response.data);
-        
-        // Handle 404 or not found cases (transcript not ready yet)
-        if (error.response.status === 404) {
-          console.log('Transcript not ready yet. Please wait for conversation to complete.');
-          return null;
-        }
       }
-      throw error;
-    } finally {
-      if (setLoading) {
-        setIsEvaluating(false);
-      }
+      return null;
     }
   };
 
-  // Function to evaluate conversation
-  const evaluateConversation = async (transcript) => {
+  // Function to evaluate conversation using raw text endpoint
+  const evaluateRawConversation = async (transcript) => {
     if (!transcript || transcript.length === 0) {
       console.log('No transcript to evaluate');
       return null;
@@ -146,14 +152,40 @@ const AgentVideoComponent = () => {
 
     setIsEvaluating(true);
     try {
-      const response = await axiosInstance.post('/evaluate', {
-        transcript: transcript,
+      // Log the transcript to console
+      console.log('=== TRANSCRIPT TO EVALUATE ===');
+      console.log('Transcript entries:', transcript.length);
+      console.log('Full transcript:', JSON.stringify(transcript, null, 2));
+      
+      // Format transcript to raw text format
+      const conversationText = formatTranscriptToRawText(transcript);
+      console.log('Formatted conversation text:', conversationText);
+      
+      console.log('Sending raw conversation text to evaluate-raw-conversation endpoint...');
+      const response = await axiosInstance.post('/evaluate-raw-conversation', {
+        conversation_text: conversationText,
       });
       
       console.log('Evaluation response:', response.data);
-      return response.data.evaluation || response.data.result || response.data;
+      
+      // Return evaluation and update transcript if provided
+      if (response.data.transcript && response.data.transcript.length > 0) {
+        setConversationTranscript(response.data.transcript);
+        transcriptRef.current = response.data.transcript;
+      }
+      
+      // Extract evaluation result - prioritize evaluation field
+      const evaluationResult = response.data.evaluation || response.data.result || response.data;
+      console.log('Extracted evaluation result:', evaluationResult);
+      console.log('Evaluation result type:', typeof evaluationResult);
+      
+      return evaluationResult;
     } catch (error) {
-      console.error('Error evaluating conversation:', error);
+      console.error('Error evaluating raw conversation:', error);
+      if (error.response) {
+        console.error('Error response status:', error.response.status);
+        console.error('Error response data:', error.response.data);
+      }
       throw error;
     } finally {
       setIsEvaluating(false);
@@ -166,6 +198,8 @@ const AgentVideoComponent = () => {
     setError(null);
     setEvaluationResult(null);
     setShowEvaluation(false);
+    setIsEvaluationProcessing(false);
+    setEvaluationCompleted(false);
     transcriptRef.current = [];
     setConversationTranscript([]);
     try {
@@ -203,6 +237,11 @@ const AgentVideoComponent = () => {
               if (state === ConnectionState.Connected) {
                 setIsDisconnected(false);
                 setError(null);
+                // Update room name from actual LiveKit room object
+                if (room.name && room.name !== roomInfoRef.current.room) {
+                  console.log(`Room connected - updating room name from ${roomInfoRef.current.room} to ${room.name}`);
+                  roomInfoRef.current.room = room.name;
+                }
               }
             }
           });
@@ -212,95 +251,80 @@ const AgentVideoComponent = () => {
             if (mounted) {
               console.log('Disconnected:', reason);
               
-              // Try to process evaluation from most recent transcript file
-              try {
-                console.log('Processing evaluation from most recent transcript file...');
-                // Wait a bit for backend to save transcript file
-                await new Promise(resolve => setTimeout(resolve, 3000));
-                
-                // Retry logic: try up to 5 times with increasing delays
-                let evaluation = null;
-                let retries = 0;
-                const maxRetries = 5;
-                
-                // First call with loading state
-                evaluation = await processEvaluation(true);
-                
-                // Retry without showing loading state each time
-                while (retries < maxRetries && !evaluation) {
-                  retries++;
-                  if (retries < maxRetries) {
-                    console.log(`Transcript not ready yet. Retrying in ${retries * 2} seconds... (${retries}/${maxRetries})`);
-                    await new Promise(resolve => setTimeout(resolve, retries * 2000));
-                    evaluation = await processEvaluation(false);
-                  }
-                }
-                
-                if (evaluation) {
-                  setEvaluationResult(evaluation);
-                  setShowEvaluation(true);
-                  return; // Exit early if we got evaluation
-                } else {
-                  // Fallback: try with transcript if available
-                  console.log('Could not get evaluation from backend, trying with local transcript...');
-                  if (transcriptRef.current.length > 0) {
-                    try {
-                      const evalResult = await evaluateConversation(transcriptRef.current);
-                      if (evalResult) {
-                        setEvaluationResult(evalResult);
-                        setShowEvaluation(true);
-                      } else {
-                        setEvaluationResult('Evaluation completed but no results were returned.');
-                        setShowEvaluation(true);
-                      }
-                    } catch (evalError) {
-                      console.error('Error evaluating with transcript:', evalError);
-                      const errorMsg = evalError.response?.data?.detail || 
-                                     evalError.message || 
-                                     'Failed to evaluate conversation';
-                      setEvaluationResult(`Error: ${errorMsg}`);
-                      setShowEvaluation(true);
-                    }
-                  } else {
-                    setEvaluationResult('No conversation transcript available. Please wait for the conversation to complete.');
-                    setShowEvaluation(true);
-                  }
-                }
-              } catch (fetchError) {
-                console.error('Error processing evaluation:', fetchError);
-                // Try with transcript as fallback
-                if (transcriptRef.current.length > 0) {
-                  try {
-                    const evalResult = await evaluateConversation(transcriptRef.current);
-                    if (evalResult) {
-                      setEvaluationResult(evalResult);
-                      setShowEvaluation(true);
-                    } else {
-                      setEvaluationResult('Evaluation completed but no results were returned.');
-                      setShowEvaluation(true);
-                    }
-                  } catch (evalError) {
-                    console.error('Error evaluating with transcript:', evalError);
-                    const errorMsg = evalError.response?.data?.detail || 
-                                   evalError.message || 
-                                   'Failed to evaluate conversation';
-                    setEvaluationResult(`Error: ${errorMsg}`);
-                    setShowEvaluation(true);
-                  }
-                } else {
-                  const errorMsg = fetchError.response?.data?.detail || 
-                                 fetchError.message || 
-                                 'Failed to process evaluation';
-                  setEvaluationResult(`Error: ${errorMsg}\n\nNo conversation transcript available.`);
-                  setShowEvaluation(true);
+              // Set evaluation processing state - this will show loading screen
+              setIsEvaluationProcessing(true);
+              setIsDisconnected(true);
+              
+              // Wait a moment for backend to save transcript
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              
+              // Log transcript before evaluation
+              console.log('=== DISCONNECTED - TRANSCRIPT ===');
+              console.log('Transcript entries:', transcriptRef.current.length);
+              console.log('Full transcript:', JSON.stringify(transcriptRef.current, null, 2));
+              
+              // If local transcript is empty, fetch from backend
+              // Use actual room name from LiveKit room object
+              const actualRoomName = room.name || roomInfoRef.current.room;
+              let transcriptToUse = transcriptRef.current;
+              if (transcriptToUse.length === 0 && actualRoomName) {
+                console.log(`Local transcript is empty, fetching complete conversation from backend for room: ${actualRoomName}...`);
+                const backendTranscript = await fetchConversationHistory(actualRoomName);
+                if (backendTranscript && backendTranscript.length > 0) {
+                  transcriptToUse = backendTranscript;
+                  console.log(`Fetched ${backendTranscript.length} complete conversation entries from backend`);
                 }
               }
               
-              const reasonStr = typeof reason === 'string' ? reason : (reason?.toString() || 'Unknown');
-              if (reasonStr === 'CLIENT_INITIATED' || reasonStr === 'CLIENT_INITIATED_DISCONNECT') {
-                setIsDisconnected(true);
-              } else {
-                setIsDisconnected(true);
+              // Evaluate using the transcript we have
+              try {
+                if (transcriptToUse.length > 0) {
+                  console.log(`Evaluating conversation with ${transcriptToUse.length} entries...`);
+                  const evaluation = await evaluateRawConversation(transcriptToUse);
+                  
+                  console.log('=== EVALUATION RESULT ===');
+                  console.log('Evaluation:', evaluation);
+                  console.log('Evaluation type:', typeof evaluation);
+                  
+                  // Set evaluation result and show modal
+                  // Ensure evaluation is always a truthy value
+                  const finalEvaluation = evaluation || 'Evaluation completed but no results were returned.';
+                  
+                  console.log('=== SETTING EVALUATION RESULT ===');
+                  console.log('Final evaluation:', finalEvaluation);
+                  console.log('Evaluation type:', typeof finalEvaluation);
+                  console.log('Evaluation length:', finalEvaluation?.length || 0);
+                  
+                  // Set all states together - React will batch these updates
+                  setEvaluationResult(finalEvaluation);
+                  setIsEvaluationProcessing(false);
+                  setEvaluationCompleted(true);
+                  setShowEvaluation(true);
+                  
+                  console.log('=== STATE UPDATED ===');
+                  console.log('showEvaluation: true');
+                  console.log('evaluationResult set:', !!finalEvaluation);
+                  console.log('Evaluation modal should now be visible');
+                } else {
+                  console.log('No transcript available for evaluation');
+                  const noTranscriptMsg = 'No conversation transcript available. Please wait for the conversation to complete.';
+                  setEvaluationResult(noTranscriptMsg);
+                  setIsEvaluationProcessing(false);
+                  setEvaluationCompleted(true);
+                  setShowEvaluation(true);
+                  console.log('Evaluation modal should now be visible (no transcript)');
+                }
+              } catch (evalError) {
+                console.error('Error evaluating conversation:', evalError);
+                const errorMsg = evalError.response?.data?.detail || 
+                               evalError.message || 
+                               'Failed to evaluate conversation';
+                const errorResult = `Error: ${errorMsg}`;
+                setEvaluationResult(errorResult);
+                setIsEvaluationProcessing(false);
+                setEvaluationCompleted(true);
+                setShowEvaluation(true);
+                console.log('Evaluation modal should now be visible (error case)');
               }
             }
           });
@@ -309,22 +333,43 @@ const AgentVideoComponent = () => {
           room.on(RoomEvent.DataReceived, (payload, participant, kind, topic) => {
             if (mounted && kind === DataPacket_Kind.RELIABLE) {
               try {
-                const data = JSON.parse(new TextDecoder().decode(payload));
+                const decoded = new TextDecoder().decode(payload);
+                console.log('=== DATA MESSAGE RECEIVED ===');
+                console.log('Raw payload:', decoded);
+                console.log('Participant:', participant?.identity || participant?.name || 'unknown');
+                console.log('Kind:', kind);
+                console.log('Topic:', topic);
+                
+                const data = JSON.parse(decoded);
+                console.log('Parsed data:', data);
+                
                 if (data.type === 'transcript' && data.role && data.message) {
+                  console.log('Adding transcript entry:', { role: data.role, message: data.message });
                   addToTranscript(data.role, data.message);
                 } else if (data.role && data.message) {
                   // Also handle direct transcript format
+                  console.log('Adding transcript entry (direct format):', { role: data.role, message: data.message });
                   addToTranscript(data.role, data.message);
+                } else {
+                  console.log('Data message received but format not recognized:', data);
                 }
               } catch (e) {
-                console.log('Could not parse data message:', e);
+                console.error('Could not parse data message:', e);
+                console.error('Payload:', payload);
               }
+            } else {
+              console.log('Data message received but not reliable:', { kind, mounted });
             }
           });
 
           const { token, room: roomName } = await getToken();
-          roomInfoRef.current.room = roomName;
           await room.connect(serverUrl, token);
+          
+          // Get the actual room name from LiveKit room object (after connection)
+          // This ensures we use the correct room name that matches what the agent uses
+          const actualRoomName = room.name || roomName;
+          roomInfoRef.current.room = actualRoomName;
+          console.log(`Connected to room: ${actualRoomName} (token room: ${roomName})`);
           
           // Auto-enable microphone
           if (mounted) {
@@ -367,6 +412,73 @@ const AgentVideoComponent = () => {
     };
   }, [room]);
 
+  // Sync transcript with in-memory storage periodically during active session
+  useEffect(() => {
+    // Use actual room name from LiveKit room object, fallback to ref
+    const actualRoomName = room.name || roomInfoRef.current.room;
+    
+    if (room.state === ConnectionState.Connected && actualRoomName) {
+      // Update ref with actual room name
+      if (room.name && room.name !== roomInfoRef.current.room) {
+        console.log(`Updating room name from ${roomInfoRef.current.room} to ${room.name}`);
+        roomInfoRef.current.room = room.name;
+      }
+      
+      const roomName = actualRoomName;
+      
+      // Function to sync transcript from backend without replacing local state
+      const syncTranscriptFromBackend = async () => {
+        try {
+          console.log(`[Sync] Fetching transcript for room: ${roomName} (room.name: ${room.name})`);
+          const response = await axiosInstance.get(`/conversation-history/${roomName}`);
+          if (response.data && response.data.transcript) {
+            const backendTranscript = response.data.transcript;
+            const currentLength = transcriptRef.current.length;
+            
+            if (backendTranscript.length > 0) {
+              if (backendTranscript.length > currentLength) {
+                // Backend has more messages, update local transcript
+                transcriptRef.current = backendTranscript;
+                setConversationTranscript(backendTranscript);
+                console.log(`Synced transcript from in-memory storage: ${backendTranscript.length} messages (was ${currentLength})`);
+                return true;
+              } else if (backendTranscript.length < currentLength) {
+                // Local has more messages (from data channel), keep local but log
+                console.log(`Local transcript has more messages (${currentLength}) than backend (${backendTranscript.length}), keeping local`);
+              }
+            } else {
+              // Empty transcript but room exists - this is OK for new sessions
+              console.log(`[Sync] Room ${roomName} exists in memory but transcript is empty (${response.data.source || 'unknown source'})`);
+            }
+          }
+          return false;
+        } catch (error) {
+          if (error.response && error.response.status === 404) {
+            console.log(`[Sync] Room ${roomName} not found in API yet (404) - this is OK for new sessions`);
+          } else {
+            console.debug('Transcript sync failed (non-critical):', error);
+          }
+          return false;
+        }
+      };
+      
+      // Initial sync when connected (after a short delay to let data channel messages arrive)
+      const initialTimeout = setTimeout(() => {
+        syncTranscriptFromBackend();
+      }, 3000);
+      
+      // Periodic sync every 10 seconds to catch any missed messages
+      const syncInterval = setInterval(() => {
+        syncTranscriptFromBackend();
+      }, 10000); // Sync every 10 seconds
+
+      return () => {
+        clearTimeout(initialTimeout);
+        clearInterval(syncInterval);
+      };
+    }
+  }, [room, connectionState, roomInfoRef.current.room]);
+
   // Ensure audio tracks are subscribed for interaction
   useEffect(() => {
     if (room.state === ConnectionState.Connected) {
@@ -404,22 +516,40 @@ const AgentVideoComponent = () => {
     }
   }, [room, connectionState]);
 
-  // Show evaluation modal
+  // Show evaluation modal (prioritize this over other screens)
   if (showEvaluation && evaluationResult) {
+    console.log('Rendering Evaluation Modal');
+    console.log('Evaluation result:', evaluationResult);
     return (
       <EvaluationModal
         evaluation={evaluationResult}
         transcript={conversationTranscript}
         onClose={() => {
+          console.log('Closing evaluation modal');
           setShowEvaluation(false);
           setIsDisconnected(true);
+        }}
+        onStartNew={() => {
+          console.log('Starting new session from evaluation modal');
+          // Reset everything and start a new session
+          setShowEvaluation(false);
+          setEvaluationResult(null);
+          setEvaluationCompleted(false);
+          setIsEvaluationProcessing(false);
+          transcriptRef.current = [];
+          setConversationTranscript([]);
+          roomInfoRef.current.room = null;
+          setIsDisconnected(false);
+          setError(null);
+          // Reconnect to start new session
+          handleReconnect();
         }}
       />
     );
   }
 
   // Show evaluating state
-  if (isEvaluating) {
+  if (isEvaluating || isEvaluationProcessing) {
     return (
       <div className="flex items-center justify-center h-screen bg-gray-900">
         <div className="text-white text-center p-8 max-w-md">
@@ -431,8 +561,8 @@ const AgentVideoComponent = () => {
     );
   }
 
-  // Show friendly disconnect message or error
-  if (isDisconnected && !error) {
+  // Show friendly disconnect message or error (only if evaluation is not showing)
+  if (isDisconnected && !error && !showEvaluation && !evaluationCompleted) {
     return (
       <div className="flex items-center justify-center h-screen bg-gray-900">
         <div className="text-white text-center p-8 max-w-md">
@@ -451,8 +581,8 @@ const AgentVideoComponent = () => {
     );
   }
 
-  // Show error message if connection failed
-  if (error && !isEvaluating) {
+  // Show error message if connection failed (only if evaluation is not showing)
+  if (error && !isEvaluating && !isEvaluationProcessing && !showEvaluation) {
     return (
       <div className="flex items-center justify-center h-screen bg-gray-900">
         <div className="text-white text-xl text-center p-4">
@@ -480,74 +610,72 @@ const AgentVideoComponent = () => {
         <CustomControlBar 
           room={room} 
           onLeave={async () => {
-            // Get current transcript and room name
-            const currentTranscript = transcriptRef.current;
-            const roomName = roomInfoRef.current.room;
+            // Get current transcript
+            let currentTranscript = transcriptRef.current;
+            // Use actual room name from LiveKit room object
+            const actualRoomName = room.name || roomInfoRef.current.room;
+            
+            // Log transcript before evaluation
+            console.log('=== LEAVING CALL - TRANSCRIPT ===');
+            console.log('Transcript entries:', currentTranscript.length);
+            console.log('Full transcript:', JSON.stringify(currentTranscript, null, 2));
+            console.log('Room name:', actualRoomName);
+            console.log('Room object name:', room.name);
+            console.log('RoomInfoRef name:', roomInfoRef.current.room);
             
             // Disconnect from room first
             room.disconnect();
             
-            // Try to process evaluation from most recent transcript file
-            try {
-              console.log('Processing evaluation from most recent transcript file...');
-              // Wait a bit for backend to save transcript file
-              await new Promise(resolve => setTimeout(resolve, 3000));
-              
-              // Retry logic: try up to 5 times with increasing delays
-              let evaluation = null;
-              let retries = 0;
-              const maxRetries = 5;
-              
-              // First call with loading state
-              evaluation = await processEvaluation(true);
-              
-              // Retry without showing loading state each time
-              while (retries < maxRetries && !evaluation) {
-                retries++;
-                if (retries < maxRetries) {
-                  console.log(`Transcript not ready yet. Retrying in ${retries * 2} seconds... (${retries}/${maxRetries})`);
-                  await new Promise(resolve => setTimeout(resolve, retries * 2000));
-                  evaluation = await processEvaluation(false);
-                }
+            // Set evaluation processing state
+            setIsEvaluationProcessing(true);
+            setIsDisconnected(false);
+            
+            // Wait a moment for backend to save transcript
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // If local transcript is empty, fetch complete conversation from backend
+            if (currentTranscript.length === 0 && actualRoomName) {
+              console.log(`Local transcript is empty, fetching complete conversation from backend for room: ${actualRoomName}...`);
+              const backendTranscript = await fetchConversationHistory(actualRoomName);
+              if (backendTranscript && backendTranscript.length > 0) {
+                currentTranscript = backendTranscript;
+                console.log(`Fetched ${backendTranscript.length} complete conversation entries from backend`);
               }
-              
-              if (evaluation) {
-                setEvaluationResult(evaluation);
-                setShowEvaluation(true);
-                return;
-              } else {
-                // Evaluation not found, try with transcript
-                console.log('Could not get evaluation from backend, trying with local transcript...');
-              }
-            } catch (fetchError) {
-              console.error('Error processing evaluation:', fetchError);
-              // Continue to try with transcript
             }
             
-            // Fallback: Evaluate conversation with transcript
-            if (currentTranscript.length > 0) {
-              try {
-                const evaluation = await evaluateConversation(currentTranscript);
+            // Evaluate using the transcript we have
+            try {
+              if (currentTranscript.length > 0) {
+                console.log(`Evaluating conversation with ${currentTranscript.length} entries...`);
+                const evaluation = await evaluateRawConversation(currentTranscript);
+                
                 if (evaluation) {
                   setEvaluationResult(evaluation);
-                  setShowEvaluation(true);
+                  setIsEvaluationProcessing(false);
+                  setEvaluationCompleted(true);
+                  setShowEvaluation(true); // Show evaluation modal
                 } else {
                   setEvaluationResult('Evaluation completed but no results were returned.');
-                  setShowEvaluation(true);
+                  setIsEvaluationProcessing(false);
+                  setEvaluationCompleted(true);
+                  setShowEvaluation(true); // Show evaluation modal
                 }
-              } catch (evalError) {
-                console.error('Error evaluating conversation:', evalError);
-                // Show error message
-                const errorMsg = evalError.response?.data?.detail || 
-                               evalError.message || 
-                               'Failed to evaluate conversation';
-                setEvaluationResult(`Error: ${errorMsg}`);
-                setShowEvaluation(true);
+              } else {
+                console.log('No transcript available for evaluation');
+                setEvaluationResult('No conversation transcript available for evaluation. Please wait for the conversation to complete.');
+                setIsEvaluationProcessing(false);
+                setEvaluationCompleted(true);
+                setShowEvaluation(true); // Show evaluation modal
               }
-            } else {
-              // No transcript and no evaluation found
-              setEvaluationResult('No conversation transcript available for evaluation. Please wait for the conversation to complete.');
-              setShowEvaluation(true);
+            } catch (evalError) {
+              console.error('Error evaluating conversation:', evalError);
+              const errorMsg = evalError.response?.data?.detail || 
+                             evalError.message || 
+                             'Failed to evaluate conversation';
+              setEvaluationResult(`Error: ${errorMsg}`);
+              setIsEvaluationProcessing(false);
+              setEvaluationCompleted(true);
+              setShowEvaluation(true); // Show evaluation modal
             }
           }}
         />
@@ -557,8 +685,14 @@ const AgentVideoComponent = () => {
 };
 
 // Evaluation Modal Component
-const EvaluationModal = ({ evaluation, transcript, onClose }) => {
+const EvaluationModal = ({ evaluation, transcript, onClose, onStartNew }) => {
   const [copied, setCopied] = useState(false);
+  const [isVisible, setIsVisible] = useState(false);
+
+  // Animation on mount
+  useEffect(() => {
+    setIsVisible(true);
+  }, []);
 
   // Helper function to extract evaluation text for copying
   const getEvaluationText = () => {
@@ -618,13 +752,49 @@ const EvaluationModal = ({ evaluation, transcript, onClose }) => {
     }
   };
 
+  // Helper function to get score icon
+  const getScoreIcon = (percentage) => {
+    if (percentage >= 80) {
+      return (
+        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+        </svg>
+      );
+    } else if (percentage >= 60) {
+      return (
+        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+        </svg>
+      );
+    } else {
+      return (
+        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        </svg>
+      );
+    }
+  };
+
   // Helper function to render evaluation content
   const renderEvaluationContent = () => {
     if (typeof evaluation === 'string') {
       return (
-        <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-6 border border-gray-700 shadow-xl">
-          <div className="whitespace-pre-wrap text-gray-100 leading-relaxed text-base font-normal">
-            {evaluation}
+        <div className="bg-gradient-to-br from-slate-800/90 via-slate-800/80 to-slate-900/90 rounded-2xl p-8 border border-slate-700/50 shadow-2xl backdrop-blur-sm relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-purple-500/5 pointer-events-none"></div>
+          <div className="relative z-10">
+            <div className="flex items-start gap-4 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex items-center justify-center border border-blue-500/30">
+                <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-white mb-2">Evaluation Summary</h3>
+                <div className="whitespace-pre-wrap text-gray-200 leading-relaxed text-base font-normal">
+                  {evaluation}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       );
@@ -637,45 +807,93 @@ const EvaluationModal = ({ evaluation, transcript, onClose }) => {
       // If there are scores, display them nicely
       if (evaluation.scores || evaluation.score) {
         const scores = evaluation.scores || (evaluation.score ? { Overall: evaluation.score } : {});
+        const scoreEntries = Object.entries(scores);
+        const overallScore = scoreEntries.length > 0 ? (typeof scoreEntries[0][1] === 'number' ? scoreEntries[0][1] : parseFloat(scoreEntries[0][1])) : null;
+        
         return (
-          <div className="space-y-6">
+          <div className="space-y-8 animate-fade-in">
+            {/* Overall Score Banner */}
+            {overallScore !== null && (
+              <div className="bg-gradient-to-r from-blue-600/20 via-purple-600/20 to-pink-600/20 rounded-2xl p-6 border border-blue-500/30 relative overflow-hidden">
+                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-pink-500/10 animate-pulse"></div>
+                <div className="relative z-10 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-1">Overall Performance</p>
+                    <p className="text-4xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                      {(overallScore * 100).toFixed(1)}%
+                    </p>
+                  </div>
+                  <div className={`w-20 h-20 rounded-full flex items-center justify-center ${
+                    overallScore >= 0.8 ? 'bg-green-500/20 border-4 border-green-400' :
+                    overallScore >= 0.6 ? 'bg-yellow-500/20 border-4 border-yellow-400' :
+                    'bg-red-500/20 border-4 border-red-400'
+                  }`}>
+                    {getScoreIcon(overallScore * 100)}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Scores Section */}
             <div>
-              <h3 className="text-2xl font-bold mb-5 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">
-                Evaluation Scores
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {Object.entries(scores).map(([key, value]) => {
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-1 h-8 bg-gradient-to-b from-blue-500 to-purple-500 rounded-full"></div>
+                <h3 className="text-3xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                  Detailed Scores
+                </h3>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {scoreEntries.map(([key, value], index) => {
                   const numValue = typeof value === 'number' ? value : parseFloat(value);
                   const percentage = numValue * 100;
+                  const isExcellent = percentage >= 80;
                   const isGood = percentage >= 70;
                   const isAverage = percentage >= 50 && percentage < 70;
                   
+                  const colorClasses = isExcellent 
+                    ? 'from-emerald-500/20 to-green-500/20 border-emerald-400/40 text-emerald-400'
+                    : isGood 
+                    ? 'from-blue-500/20 to-cyan-500/20 border-blue-400/40 text-blue-400'
+                    : isAverage
+                    ? 'from-yellow-500/20 to-orange-500/20 border-yellow-400/40 text-yellow-400'
+                    : 'from-red-500/20 to-pink-500/20 border-red-400/40 text-red-400';
+                  
+                  const progressColor = isExcellent
+                    ? 'from-emerald-500 to-green-400'
+                    : isGood
+                    ? 'from-blue-500 to-cyan-400'
+                    : isAverage
+                    ? 'from-yellow-500 to-orange-400'
+                    : 'from-red-500 to-pink-400';
+                  
                   return (
                     <div 
-                      key={key} 
-                      className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-5 border border-gray-700 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105"
+                      key={key}
+                      className={`bg-gradient-to-br ${colorClasses} rounded-2xl p-6 border-2 shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 hover:-translate-y-1 relative overflow-hidden group`}
+                      style={{ animationDelay: `${index * 100}ms` }}
                     >
-                      <div className="text-sm font-medium text-gray-400 mb-2 uppercase tracking-wide">
-                        {key}
-                      </div>
-                      <div className={`text-3xl font-bold ${
-                        isGood ? 'text-green-400' : isAverage ? 'text-yellow-400' : 'text-red-400'
-                      }`}>
-                        {typeof value === 'number' ? `${percentage.toFixed(1)}%` : value}
-                      </div>
-                      {typeof value === 'number' && (
-                        <div className="mt-3 w-full bg-gray-700 rounded-full h-2 overflow-hidden">
-                          <div 
-                            className={`h-full rounded-full transition-all duration-500 ${
-                              isGood ? 'bg-gradient-to-r from-green-500 to-green-400' : 
-                              isAverage ? 'bg-gradient-to-r from-yellow-500 to-yellow-400' : 
-                              'bg-gradient-to-r from-red-500 to-red-400'
-                            }`}
-                            style={{ width: `${Math.min(percentage, 100)}%` }}
-                          />
+                      <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                      <div className="relative z-10">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="text-sm font-semibold text-gray-300 uppercase tracking-wider">
+                            {key}
+                          </div>
+                          {getScoreIcon(percentage)}
                         </div>
-                      )}
+                        <div className={`text-4xl font-bold mb-4 ${colorClasses.split(' ')[2]}`}>
+                          {typeof value === 'number' ? `${percentage.toFixed(1)}%` : value}
+                        </div>
+                        {typeof value === 'number' && (
+                          <div className="relative w-full bg-gray-800/50 rounded-full h-3 overflow-hidden backdrop-blur-sm">
+                            <div 
+                              className={`h-full rounded-full bg-gradient-to-r ${progressColor} transition-all duration-1000 ease-out shadow-lg`}
+                              style={{ width: `${Math.min(percentage, 100)}%` }}
+                            >
+                              <div className="absolute inset-0 bg-white/20 animate-shimmer"></div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -684,13 +902,28 @@ const EvaluationModal = ({ evaluation, transcript, onClose }) => {
             
             {/* Evaluation Text */}
             {evalText && (
-              <div>
-                <h3 className="text-2xl font-bold mb-5 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">
-                  Evaluation Details
-                </h3>
-                <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-6 border border-gray-700 shadow-xl">
-                  <div className="whitespace-pre-wrap text-gray-100 leading-relaxed text-base font-normal">
-                    {typeof evalText === 'string' ? evalText : JSON.stringify(evalText, null, 2)}
+              <div className="animate-fade-in" style={{ animationDelay: '300ms' }}>
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-1 h-8 bg-gradient-to-b from-purple-500 to-pink-500 rounded-full"></div>
+                  <h3 className="text-3xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-rose-400 bg-clip-text text-transparent">
+                    Evaluation Details
+                  </h3>
+                </div>
+                <div className="bg-gradient-to-br from-slate-800/90 via-slate-800/80 to-slate-900/90 rounded-2xl p-8 border border-slate-700/50 shadow-2xl backdrop-blur-sm relative overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 to-pink-500/5 pointer-events-none"></div>
+                  <div className="relative z-10">
+                    <div className="flex items-start gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center border border-purple-500/30 flex-shrink-0">
+                        <svg className="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                      </div>
+                      <div className="flex-1">
+                        <div className="whitespace-pre-wrap text-gray-200 leading-relaxed text-base font-normal">
+                          {typeof evalText === 'string' ? evalText : JSON.stringify(evalText, null, 2)}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -700,22 +933,28 @@ const EvaluationModal = ({ evaluation, transcript, onClose }) => {
             {Object.keys(evaluation).filter(key => 
               !['evaluation', 'result', 'text', 'message', 'output', 'scores', 'score'].includes(key)
             ).length > 0 && (
-              <div>
-                <h3 className="text-2xl font-bold mb-5 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">
-                  Additional Information
-                </h3>
-                <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-6 border border-gray-700 shadow-xl">
-                  <pre className="text-gray-100 text-sm overflow-x-auto font-mono">
-                    {JSON.stringify(
-                      Object.fromEntries(
-                        Object.entries(evaluation).filter(([key]) => 
-                          !['evaluation', 'result', 'text', 'message', 'output', 'scores', 'score'].includes(key)
-                        )
-                      ),
-                      null,
-                      2
-                    )}
-                  </pre>
+              <div className="animate-fade-in" style={{ animationDelay: '400ms' }}>
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-1 h-8 bg-gradient-to-b from-cyan-500 to-blue-500 rounded-full"></div>
+                  <h3 className="text-3xl font-bold bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
+                    Additional Information
+                  </h3>
+                </div>
+                <div className="bg-gradient-to-br from-slate-800/90 via-slate-800/80 to-slate-900/90 rounded-2xl p-8 border border-slate-700/50 shadow-2xl backdrop-blur-sm relative overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-br from-cyan-500/5 to-blue-500/5 pointer-events-none"></div>
+                  <div className="relative z-10">
+                    <pre className="text-gray-200 text-sm overflow-x-auto font-mono leading-relaxed">
+                      {JSON.stringify(
+                        Object.fromEntries(
+                          Object.entries(evaluation).filter(([key]) => 
+                            !['evaluation', 'result', 'text', 'message', 'output', 'scores', 'score'].includes(key)
+                          )
+                        ),
+                        null,
+                        2
+                      )}
+                    </pre>
+                  </div>
                 </div>
               </div>
             )}
@@ -726,9 +965,21 @@ const EvaluationModal = ({ evaluation, transcript, onClose }) => {
       // If it's just text content
       if (evalText) {
         return (
-          <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-6 border border-gray-700 shadow-xl">
-            <div className="whitespace-pre-wrap text-gray-100 leading-relaxed text-base font-normal">
-              {typeof evalText === 'string' ? evalText : JSON.stringify(evalText, null, 2)}
+          <div className="bg-gradient-to-br from-slate-800/90 via-slate-800/80 to-slate-900/90 rounded-2xl p-8 border border-slate-700/50 shadow-2xl backdrop-blur-sm relative overflow-hidden">
+            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-purple-500/5 pointer-events-none"></div>
+            <div className="relative z-10">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500/20 to-purple-500/20 flex items-center justify-center border border-blue-500/30 flex-shrink-0">
+                  <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <div className="whitespace-pre-wrap text-gray-200 leading-relaxed text-base font-normal">
+                    {typeof evalText === 'string' ? evalText : JSON.stringify(evalText, null, 2)}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         );
@@ -736,8 +987,8 @@ const EvaluationModal = ({ evaluation, transcript, onClose }) => {
       
       // Fallback: show as JSON
       return (
-        <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-6 border border-gray-700 shadow-xl">
-          <pre className="text-gray-100 text-sm overflow-x-auto font-mono">
+        <div className="bg-gradient-to-br from-slate-800/90 via-slate-800/80 to-slate-900/90 rounded-2xl p-8 border border-slate-700/50 shadow-2xl backdrop-blur-sm">
+          <pre className="text-gray-200 text-sm overflow-x-auto font-mono leading-relaxed">
             {JSON.stringify(evaluation, null, 2)}
           </pre>
         </div>
@@ -745,54 +996,78 @@ const EvaluationModal = ({ evaluation, transcript, onClose }) => {
     }
 
     return (
-      <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-6 border border-gray-700 shadow-xl">
-        <div className="text-gray-300 text-center py-8">No evaluation data available.</div>
+      <div className="bg-gradient-to-br from-slate-800/90 via-slate-800/80 to-slate-900/90 rounded-2xl p-8 border border-slate-700/50 shadow-2xl backdrop-blur-sm">
+        <div className="text-gray-300 text-center py-12">
+          <svg className="w-16 h-16 mx-auto mb-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+          <p className="text-lg font-medium">No evaluation data available.</p>
+        </div>
       </div>
     );
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-gradient-to-br from-gray-900 via-gray-900 to-gray-800 text-white rounded-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl border border-gray-700">
+    <div 
+      className={`fixed inset-0 bg-black/70 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-opacity duration-300 ${
+        isVisible ? 'opacity-100' : 'opacity-0'
+      }`}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div 
+        className={`bg-gradient-to-br from-slate-900 via-slate-900 to-slate-800 text-white rounded-3xl max-w-6xl w-full max-h-[92vh] overflow-hidden flex flex-col shadow-2xl border border-slate-700/50 backdrop-blur-xl transition-all duration-300 ${
+          isVisible ? 'scale-100 opacity-100' : 'scale-95 opacity-0'
+        }`}
+      >
         {/* Header */}
-        <div className="flex justify-between items-center p-6 border-b border-gray-700 bg-gradient-to-r from-gray-800 to-gray-900">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center">
-              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        <div className="flex justify-between items-center p-6 border-b border-slate-700/50 bg-gradient-to-r from-slate-800/80 via-slate-800/60 to-slate-800/80 backdrop-blur-sm relative">
+          <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-pink-500/5 pointer-events-none"></div>
+          <div className="relative z-10 flex items-center gap-4 flex-1">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg">
+              <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
             </div>
-            <h2 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-              Conversation Evaluation
-            </h2>
+            <div>
+              <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                Conversation Evaluation
+              </h2>
+              <p className="text-sm text-gray-400 mt-1">Your performance analysis</p>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="relative z-10 flex items-center gap-3">
             {/* Copy Button */}
             <button
               onClick={handleCopy}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded-lg transition-all duration-200 border border-gray-600 hover:border-gray-500"
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl transition-all duration-200 border font-medium ${
+                copied 
+                  ? 'bg-green-500/20 border-green-400/50 text-green-400' 
+                  : 'bg-slate-800/80 hover:bg-slate-700/80 text-gray-300 hover:text-white border-slate-600/50 hover:border-slate-500/50'
+              } shadow-lg hover:shadow-xl hover:scale-105`}
               title="Copy evaluation results"
             >
               {copied ? (
                 <>
-                  <svg className="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                   </svg>
-                  <span className="text-sm font-medium">Copied!</span>
+                  <span className="text-sm font-semibold">Copied!</span>
                 </>
               ) : (
                 <>
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                   </svg>
-                  <span className="text-sm font-medium">Copy</span>
+                  <span className="text-sm font-semibold">Copy</span>
                 </>
               )}
             </button>
             {/* Close Button */}
             <button
               onClick={onClose}
-              className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-all duration-200"
+              className="p-2.5 text-gray-400 hover:text-white hover:bg-slate-700/80 rounded-xl transition-all duration-200 border border-transparent hover:border-slate-600/50"
               title="Close"
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -803,38 +1078,79 @@ const EvaluationModal = ({ evaluation, transcript, onClose }) => {
         </div>
         
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
           <div className="max-w-none">
             {renderEvaluationContent()}
           </div>
         </div>
         
         {/* Footer */}
-        <div className="p-6 border-t border-gray-700 bg-gradient-to-r from-gray-800 to-gray-900">
+        <div className="p-6 border-t border-slate-700/50 bg-gradient-to-r from-slate-800/80 via-slate-800/60 to-slate-800/80 backdrop-blur-sm flex gap-4">
+          {onStartNew && (
+            <button
+              onClick={onStartNew}
+              className="flex-1 bg-gradient-to-r from-green-600 via-emerald-600 to-teal-600 hover:from-green-700 hover:via-emerald-700 hover:to-teal-700 text-white font-bold py-4 px-8 rounded-xl transition-all duration-200 shadow-xl hover:shadow-2xl transform hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
+              Start New Session
+            </button>
+          )}
           <button
             onClick={onClose}
-            className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold py-3 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-[1.02]"
+            className={`${onStartNew ? 'flex-1' : 'w-full'} bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 hover:from-blue-700 hover:via-purple-700 hover:to-pink-700 text-white font-bold py-4 px-8 rounded-xl transition-all duration-200 shadow-xl hover:shadow-2xl transform hover:scale-[1.02] active:scale-[0.98]`}
           >
-            Close
+            {onStartNew ? 'Close' : 'Close Evaluation'}
           </button>
         </div>
       </div>
       
-      {/* Custom Scrollbar Styles */}
+      {/* Custom Styles */}
       <style>{`
+        @keyframes fade-in {
+          from {
+            opacity: 0;
+            transform: translateY(10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        
+        @keyframes shimmer {
+          0% {
+            transform: translateX(-100%);
+          }
+          100% {
+            transform: translateX(100%);
+          }
+        }
+        
+        .animate-fade-in {
+          animation: fade-in 0.5s ease-out forwards;
+          opacity: 0;
+        }
+        
+        .animate-shimmer {
+          animation: shimmer 2s infinite;
+        }
+        
         .custom-scrollbar::-webkit-scrollbar {
-          width: 8px;
+          width: 10px;
         }
         .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(31, 41, 55, 0.5);
-          border-radius: 4px;
+          background: rgba(15, 23, 42, 0.5);
+          border-radius: 5px;
         }
         .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(107, 114, 128, 0.5);
-          border-radius: 4px;
+          background: linear-gradient(to bottom, rgba(59, 130, 246, 0.5), rgba(147, 51, 234, 0.5));
+          border-radius: 5px;
+          border: 2px solid rgba(15, 23, 42, 0.5);
         }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(107, 114, 128, 0.8);
+          background: linear-gradient(to bottom, rgba(59, 130, 246, 0.8), rgba(147, 51, 234, 0.8));
         }
       `}</style>
     </div>

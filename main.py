@@ -188,6 +188,149 @@ def track_message(role: str, message: str, room=None):
         except Exception as e:
             logger.debug(f"Could not send transcript via data channel: {e}")
 
+    # Update API in-memory storage in real-time (non-blocking)
+    if room and hasattr(room, "name") and room.name:
+        try:
+            # Get API URL from environment or use default
+            api_url = os.getenv("API_URL", "http://localhost:8000")
+            room_name = room.name
+            logger.debug(f"Updating API transcript for room: {room_name}")
+
+            # Get or create event loop for async task
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Event loop is running, create task
+                    asyncio.create_task(
+                        update_transcript_in_api(api_url, room_name, entry)
+                    )
+                else:
+                    # No running loop, run in executor
+                    loop.run_until_complete(
+                        update_transcript_in_api(api_url, room_name, entry)
+                    )
+            except RuntimeError:
+                # No event loop, create new one
+                try:
+                    loop = asyncio.get_running_loop()
+                    asyncio.create_task(
+                        update_transcript_in_api(api_url, room_name, entry)
+                    )
+                except RuntimeError:
+                    # Can't get loop, try to run in thread
+                    import threading
+
+                    def run_update():
+                        try:
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            new_loop.run_until_complete(
+                                update_transcript_in_api(api_url, room_name, entry)
+                            )
+                            new_loop.close()
+                        except Exception:
+                            pass
+
+                    thread = threading.Thread(target=run_update, daemon=True)
+                    thread.start()
+        except Exception as e:
+            logger.debug(f"Could not update transcript in API: {e}")
+
+
+async def initialize_room_in_api(api_url: str, room_name: str):
+    """Initialize room in API's in-memory storage (creates empty entry so endpoint knows room exists)"""
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            # Initialize with empty transcript batch
+            response = await client.post(
+                f"{api_url}/update-transcript-batch/{room_name}",
+                json=[],  # Empty array to initialize
+            )
+            if response.status_code == 200:
+                logger.info(f"Initialized room '{room_name}' in API in-memory storage")
+            else:
+                logger.debug(
+                    f"API initialization failed for room {room_name}: {response.status_code}"
+                )
+    except Exception as e:
+        # Don't log errors - API might not be available, that's OK
+        logger.debug(f"Could not initialize room in API (non-critical): {e}")
+
+
+async def sync_full_transcript_to_api(
+    api_url: str, room_name: str, transcript: List[Dict[str, str]]
+):
+    """Sync full transcript to API's in-memory storage"""
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            # Convert to TranscriptEntry format
+            transcript_entries = [
+                {
+                    "role": entry["role"],
+                    "message": entry["message"],
+                    "timestamp": entry.get("timestamp", datetime.now().isoformat()),
+                }
+                for entry in transcript
+            ]
+            response = await client.post(
+                f"{api_url}/update-transcript-batch/{room_name}",
+                json=transcript_entries,
+            )
+            if response.status_code == 200:
+                logger.debug(
+                    f"Synced {len(transcript)} messages to API for room {room_name}"
+                )
+            else:
+                logger.debug(
+                    f"API sync failed for room {room_name}: {response.status_code}"
+                )
+    except Exception as e:
+        # Don't log errors - API might not be available, that's OK
+        logger.debug(f"Could not sync transcript to API (non-critical): {e}")
+
+
+async def update_transcript_in_api(api_url: str, room_name: str, entry: Dict[str, str]):
+    """Update transcript in API's in-memory storage via HTTP call"""
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.post(
+                f"{api_url}/update-transcript/{room_name}",
+                json={
+                    "role": entry["role"],
+                    "message": entry["message"],
+                    "timestamp": entry["timestamp"],
+                },
+            )
+            if response.status_code == 200:
+                logger.debug(f"Updated transcript in API for room {room_name}")
+            else:
+                logger.debug(
+                    f"API update failed for room {room_name}: {response.status_code}"
+                )
+    except Exception as e:
+        # Don't log errors - API might not be available, that's OK
+        logger.debug(f"Could not update API (non-critical): {e}")
+
+
+async def clear_transcript_in_api(api_url: str, room_name: str):
+    """Clear transcript from API's in-memory storage when session ends"""
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.delete(f"{api_url}/clear-transcript/{room_name}")
+            if response.status_code == 200:
+                logger.debug(f"Cleared transcript in API for room {room_name}")
+    except Exception as e:
+        # Don't log errors - API might not be available, that's OK
+        logger.debug(f"Could not clear API (non-critical): {e}")
+
 
 async def evaluate_conversation(transcript: List[Dict[str, str]]) -> str:
     """Evaluate the conversation using LLM based on the rubric"""
@@ -367,6 +510,15 @@ async def finalize_conversation_and_evaluate(
 
     logger.info(f"{reason}. Finalizing conversation and generating evaluation...")
     logger.info(f"Current transcript entries: {len(conversation_transcript)}")
+
+    # Clear in-memory storage in API when session ends
+    if hasattr(ctx, "room") and ctx.room and hasattr(ctx.room, "name"):
+        try:
+            api_url = os.getenv("API_URL", "http://localhost:8000")
+            room_name = ctx.room.name
+            await clear_transcript_in_api(api_url, room_name)
+        except Exception as e:
+            logger.debug(f"Could not clear API transcript (non-critical): {e}")
 
     # Final extraction of transcript from session.history (LiveKit's proper API)
     try:
@@ -858,6 +1010,22 @@ async def entrypoint(ctx: JobContext):
 
             await session.start(room=ctx.room, agent=agent)
             logger.info("Agent session started successfully")
+
+            # Initialize room in API's in-memory storage (even if empty, so endpoint knows room exists)
+            if hasattr(ctx, "room") and ctx.room and hasattr(ctx.room, "name"):
+                try:
+                    api_url = os.getenv("API_URL", "http://localhost:8000")
+                    room_name = ctx.room.name
+                    logger.info(
+                        f"Initializing room '{room_name}' in API in-memory storage"
+                    )
+                    # Initialize empty transcript for this room
+                    await initialize_room_in_api(api_url, room_name)
+                    logger.info(f"Room '{room_name}' initialized in API successfully")
+                except Exception as e:
+                    logger.warning(
+                        f"Could not initialize room '{ctx.room.name}' in API: {e}"
+                    )
         except Exception as e:
             logger.error(f"Error starting agent session: {e}")
             # If session fails to start but we have transcript, save it
@@ -873,6 +1041,40 @@ async def entrypoint(ctx: JobContext):
 
         # Start conversation duration monitor
         monitor_task = asyncio.create_task(monitor_conversation_duration(ctx, session))
+
+        # Start background task to sync transcript to API periodically
+        async def sync_transcript_to_api_periodically():
+            """Periodically sync conversation_transcript to API in-memory storage"""
+            global conversation_transcript
+            if (
+                not hasattr(ctx, "room")
+                or not ctx.room
+                or not hasattr(ctx.room, "name")
+            ):
+                logger.warning("Cannot sync transcript: room name not available")
+                return
+
+            api_url = os.getenv("API_URL", "http://localhost:8000")
+            room_name = ctx.room.name
+            logger.info(
+                f"Starting periodic transcript sync for room '{room_name}' (every 5 seconds)"
+            )
+
+            while not disconnect_detected and not manual_end_requested:
+                try:
+                    await asyncio.sleep(5)  # Sync every 5 seconds
+                    if conversation_transcript:
+                        # Sync all transcripts to API
+                        logger.debug(
+                            f"Syncing {len(conversation_transcript)} messages to API for room '{room_name}'"
+                        )
+                        await sync_full_transcript_to_api(
+                            api_url, room_name, conversation_transcript
+                        )
+                except Exception as e:
+                    logger.debug(f"Periodic transcript sync error (non-critical): {e}")
+
+        sync_task = asyncio.create_task(sync_transcript_to_api_periodically())
 
         logger.info(
             "All sessions started successfully. Conversation will run for 5 minutes."
@@ -903,6 +1105,8 @@ async def entrypoint(ctx: JobContext):
             disconnect_monitor_task.cancel()
             if "session_monitor_task" in locals():
                 session_monitor_task.cancel()
+            if "sync_task" in locals():
+                sync_task.cancel()
 
             try:
                 await disconnect_monitor_task
@@ -914,6 +1118,12 @@ async def entrypoint(ctx: JobContext):
                     await session_monitor_task
                 except (asyncio.CancelledError, Exception) as e:
                     logger.debug(f"Session monitor task cancelled/ended: {e}")
+
+            if "sync_task" in locals():
+                try:
+                    await sync_task
+                except (asyncio.CancelledError, Exception) as e:
+                    logger.debug(f"Sync task cancelled/ended: {e}")
 
             # Final safety check: ALWAYS save transcript if we have any entries
             if conversation_transcript:

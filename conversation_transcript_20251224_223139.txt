@@ -1,0 +1,9 @@
+=== CONVERSATION TRANSCRIPT ===
+
+[2025-12-24T22:31:12.743191] Salesperson: Sine
+[2025-12-24T22:31:16.188695] Customer: Look, I've already wasted 10 days with
+[2025-12-24T22:31:20.666224] Salesperson: Hi, I'm आवस.
+[2025-12-24T22:31:28.169728] Customer: Look, I don't have time for introductions. I need a loan approved today, not tomorrow. This is getting ridiculous.
+[2025-12-24T22:31:29.330074] Salesperson: I am आवस.
+[2025-12-24T22:31:30.321085] Salesperson: C s.
+[2025-12-24T22:31:35.761931] Customer: Honestly, yaar, I'm done with this back‑and‑forth. I just need
