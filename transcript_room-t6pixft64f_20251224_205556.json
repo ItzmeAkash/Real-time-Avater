@@ -1,0 +1,36 @@
+{
+  "room": "room-t6pixft64f",
+  "timestamp": "20251224_205556",
+  "transcript": [
+    {
+      "role": "Salesperson",
+      "message": "Hi.",
+      "timestamp": "2025-12-24T20:55:13.363708"
+    },
+    {
+      "role": "Customer",
+      "message": "Look, I've already wasted 10 days with another bank. They promised quick approval and did nothing. Don't tell me now that you will",
+      "timestamp": "2025-12-24T20:55:16.152715"
+    },
+    {
+      "role": "Customer",
+      "message": "Look, I've already wasted 10 days with another bank. They promised quick approval and did nothing. Don't",
+      "timestamp": "2025-12-24T20:55:20.310226"
+    },
+    {
+      "role": "Salesperson",
+      "message": "S",
+      "timestamp": "2025-12-24T20:55:26.393704"
+    },
+    {
+      "role": "Salesperson",
+      "message": "Sorry for inconvenience. How can I help you?",
+      "timestamp": "2025-12-24T20:55:26.450056"
+    },
+    {
+      "role": "Customer",
+      "message": "Honestly, yaar, I need a personal loan of ₹2.5 lakh right now for a bike. The offer I have expires in three days. I can’t afford another delay. So tell me—how fast can you actually get this approved? And what’s the real processing fee, not some hidden charge later?",
+      "timestamp": "2025-12-24T20:55:47.351151"
+    }
+  ]
+}
