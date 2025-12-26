@@ -101,7 +101,6 @@ def _generate_token(identity: str, name: str, room: str):
 
 async def evaluate_conversation(transcript: List[Dict[str, str]]) -> str:
     """Evaluate the conversation using LLM based on the rubric"""
-    import httpx
 
     # Build transcript text
     transcript_text = "\n".join([
@@ -243,38 +242,43 @@ Evaluate the salesperson's performance now:"""
 
     evaluation_prompt = rubric_prompt.format(transcript=transcript_text)
 
-    # Use Groq LLM for evaluation
+    # Use Groq LLM for evaluation with langchain_groq (better rate limiting handling)
     try:
+        import asyncio
+        from langchain_groq import ChatGroq
+        from langchain_core.messages import HumanMessage
+
         groq_api_key = os.getenv("GROQ_API_KEY")
         if not groq_api_key:
             raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {groq_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "openai/gpt-oss-120b",
-                    "messages": [{"role": "user", "content": evaluation_prompt}],
-                    "temperature": 0.3,
-                },
-                timeout=120.0,
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
-    except httpx.HTTPError as e:
-        logger.error(f"HTTP error during evaluation: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Error calling evaluation API: {str(e)}"
+        # Initialize ChatGroq with retry and rate limiting handling
+        llm = ChatGroq(
+            groq_api_key=groq_api_key,
+            model_name="openai/gpt-oss-120b",  # Using a more stable model, or use "mixtral-8x7b-32768" or "llama-3.1-70b-versatile"
+            temperature=0.3,
+            max_retries=3,  # Automatic retries for rate limits
+            timeout=120.0,
         )
+
+        # Run the synchronous invoke in an executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, lambda: llm.invoke([HumanMessage(content=evaluation_prompt)])
+        )
+        return response.content
+
     except Exception as e:
         logger.error(f"Error during evaluation: {e}")
+        error_msg = str(e)
+        # Handle rate limit errors more gracefully
+        if "429" in error_msg or "rate limit" in error_msg.lower():
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded. Please wait a moment and try again.",
+            )
         raise HTTPException(
-            status_code=500, detail=f"Error generating evaluation: {str(e)}"
+            status_code=500, detail=f"Error generating evaluation: {error_msg}"
         )
 
 
